@@ -7,6 +7,9 @@ spring:
     password: ${DB_PASSWORD:booking}
   flyway:
     enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
 
 server:
   port: ${SERVER_PORT:8082}
