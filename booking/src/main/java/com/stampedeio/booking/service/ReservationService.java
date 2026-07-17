@@ -15,8 +15,13 @@ import com.stampedeio.booking.api.CreateReservationRequest;
 import com.stampedeio.booking.api.ReservationResponse;
 import com.stampedeio.booking.catalog.CatalogClient;
 import com.stampedeio.booking.domain.Reservation;
+import com.stampedeio.booking.domain.ReservationEvent;
+import com.stampedeio.booking.domain.ReservationStateMachine;
+import com.stampedeio.booking.domain.ReservationStatus;
+import com.stampedeio.booking.domain.SeatHoldStatus;
 import com.stampedeio.booking.exception.ConflictException;
 import com.stampedeio.booking.exception.ResourceNotFoundException;
+import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
 
@@ -25,17 +30,20 @@ public class ReservationService {
 
     private final ReservationRepository reservationRepository;
     private final ReservationSeatRepository reservationSeatRepository;
+    private final ReservationEventRepository reservationEventRepository;
     private final CatalogClient catalogClient;
     private final HoldMirrorService holdMirrorService;
     private final Clock clock;
 
     public ReservationService(ReservationRepository reservationRepository,
                               ReservationSeatRepository reservationSeatRepository,
+                              ReservationEventRepository reservationEventRepository,
                               CatalogClient catalogClient,
                               HoldMirrorService holdMirrorService,
                               Clock clock) {
         this.reservationRepository = reservationRepository;
         this.reservationSeatRepository = reservationSeatRepository;
+        this.reservationEventRepository = reservationEventRepository;
         this.catalogClient = catalogClient;
         this.holdMirrorService = holdMirrorService;
         this.clock = clock;
@@ -64,11 +72,44 @@ public class ReservationService {
             if (conflictingSeat != null) {
                 throw new ConflictException("Seat " + conflictingSeat + " is already held");
             }
-            // Race: another request with the same idempotency-key won the insert.
             Reservation replayed = reservationRepository.findByIdempotencyKey(idempotencyKey)
                     .orElseThrow(() -> ex);
             return new HoldResult(ReservationResponse.from(replayed, Instant.now(clock)), true);
         }
+    }
+
+    @Transactional
+    public ReservationResponse confirm(UUID reservationId, String paymentReference, String correlationId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.CONFIRMED);
+        reservation.setStatus(ReservationStatus.CONFIRMED);
+
+        reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.CONFIRMED));
+
+        holdMirrorService.remove(reservationId);
+
+        appendEvent(reservation, "RESERVATION_CONFIRMED", correlationId, paymentReference);
+
+        return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
+    }
+
+    @Transactional
+    public ReservationResponse release(UUID reservationId, String correlationId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.RELEASED);
+        reservation.setStatus(ReservationStatus.RELEASED);
+
+        reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.RELEASED));
+
+        holdMirrorService.remove(reservationId);
+
+        appendEvent(reservation, "RESERVATION_RELEASED", correlationId, null);
+
+        return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
     }
 
     @Transactional(readOnly = true)
@@ -76,6 +117,26 @@ public class ReservationService {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
         return ReservationResponse.from(reservation, Instant.now(clock));
+    }
+
+    void appendEvent(Reservation reservation, String eventType, String correlationId,
+                     String paymentReference) {
+        int nextSeq = reservationEventRepository.findMaxSeqByAggregateId(reservation.getId())
+                .map(s -> s + 1)
+                .orElse(1);
+
+        String occurredAt = Instant.now(clock).toString();
+        StringBuilder payload = new StringBuilder();
+        payload.append("{\"state\":\"").append(reservation.getStatus())
+                .append("\",\"occurredAt\":\"").append(occurredAt)
+                .append("\",\"correlationId\":\"").append(correlationId).append("\"");
+        if (paymentReference != null) {
+            payload.append(",\"paymentReference\":\"").append(paymentReference).append("\"");
+        }
+        payload.append("}");
+
+        reservationEventRepository.save(
+                new ReservationEvent(reservation.getId(), nextSeq, eventType, payload.toString()));
     }
 
     public record HoldResult(ReservationResponse response, boolean idempotentReplay) {

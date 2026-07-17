@@ -6,6 +6,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -62,6 +63,43 @@ public class ReservationController {
         HoldResult result = reservationService.hold(idempotencyKey, request);
         HttpStatus status = result.idempotentReplay() ? HttpStatus.OK : HttpStatus.CREATED;
         return ResponseEntity.status(status).body(result.response());
+    }
+
+    @PatchMapping("/{reservationId}/confirm")
+    @Operation(summary = "Confirm a held reservation",
+            description = "Transitions a HELD reservation to CONFIRMED with a payment reference.")
+    @ApiResponse(responseCode = "200", description = "Reservation confirmed")
+    @ApiResponse(responseCode = "404", description = "Reservation not found",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Illegal state transition",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ReservationResponse confirmReservation(
+            @PathVariable UUID reservationId,
+            @RequestHeader(value = "X-Correlation-Id", required = false) String correlationId,
+            @Valid @RequestBody ConfirmReservationRequest request) {
+
+        String corrId = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        return reservationService.confirm(reservationId, request.paymentReference(), corrId);
+    }
+
+    @PatchMapping("/{reservationId}/release")
+    @Operation(summary = "Release a held reservation",
+            description = "Transitions a HELD reservation to RELEASED, freeing all seats.")
+    @ApiResponse(responseCode = "200", description = "Reservation released")
+    @ApiResponse(responseCode = "404", description = "Reservation not found",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Illegal state transition",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ReservationResponse releaseReservation(
+            @PathVariable UUID reservationId,
+            @RequestHeader(value = "X-Correlation-Id", required = false) String correlationId) {
+
+        String corrId = correlationId != null ? correlationId : UUID.randomUUID().toString();
+        return reservationService.release(reservationId, corrId);
     }
 
     @GetMapping("/{reservationId}")

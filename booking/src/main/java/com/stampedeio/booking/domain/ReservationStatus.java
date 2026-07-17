@@ -3,6 +3,7 @@ package com.stampedeio.booking.domain;
 public enum ReservationStatus {
     HELD,
     CONFIRMED,
-    CANCELLED,
-    EXPIRED
+    RELEASED,
+    EXPIRED,
+    REFUNDED
 }

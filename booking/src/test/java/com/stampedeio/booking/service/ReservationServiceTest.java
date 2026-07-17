@@ -19,15 +19,20 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import com.stampedeio.booking.api.CreateReservationRequest;
+import com.stampedeio.booking.api.ReservationResponse;
 import com.stampedeio.booking.catalog.CatalogClient;
-import com.stampedeio.booking.service.HoldMirrorService;
 import com.stampedeio.booking.domain.Reservation;
+import com.stampedeio.booking.domain.ReservationEvent;
 import com.stampedeio.booking.exception.ConflictException;
+import com.stampedeio.booking.exception.IllegalStateTransitionException;
+import com.stampedeio.booking.exception.ResourceNotFoundException;
 import com.stampedeio.booking.exception.UnprocessableEntityException;
+import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
 
@@ -35,6 +40,7 @@ class ReservationServiceTest {
 
     private ReservationRepository reservationRepository;
     private ReservationSeatRepository reservationSeatRepository;
+    private ReservationEventRepository reservationEventRepository;
     private CatalogClient catalogClient;
     private HoldMirrorService holdMirrorService;
     private ReservationService service;
@@ -43,122 +49,226 @@ class ReservationServiceTest {
     void setUp() {
         reservationRepository = mock(ReservationRepository.class);
         reservationSeatRepository = mock(ReservationSeatRepository.class);
+        reservationEventRepository = mock(ReservationEventRepository.class);
         catalogClient = mock(CatalogClient.class);
         holdMirrorService = mock(HoldMirrorService.class);
         service = new ReservationService(
-                reservationRepository, reservationSeatRepository, catalogClient,
-                holdMirrorService, Clock.systemUTC());
+                reservationRepository, reservationSeatRepository, reservationEventRepository,
+                catalogClient, holdMirrorService, Clock.systemUTC());
     }
 
-    @Test
-    @DisplayName("AC1: happy path returns HELD reservation with expiresAt = now + 7min")
-    void hold_success() {
-        UUID key = UUID.randomUUID();
-        UUID showId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
-        UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+    @Nested
+    @DisplayName("hold()")
+    class HoldTests {
 
-        when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
-        doNothing().when(catalogClient).validateSeatsForShow(showId, List.of(seatId));
-        when(reservationRepository.saveAndFlush(any(Reservation.class)))
-                .thenAnswer(inv -> inv.getArgument(0));
+        @Test
+        @DisplayName("AC1: happy path returns HELD reservation with expiresAt = now + 7min")
+        void hold_success() {
+            UUID key = UUID.randomUUID();
+            UUID showId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
+            UUID seatId = UUID.randomUUID();
+            CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
 
-        ReservationService.HoldResult result = service.hold(key, req);
+            when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
+            doNothing().when(catalogClient).validateSeatsForShow(showId, List.of(seatId));
+            when(reservationRepository.saveAndFlush(any(Reservation.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
 
-        assertThat(result.idempotentReplay()).isFalse();
-        assertThat(result.response().status()).isEqualTo("HELD");
-        assertThat(result.response().seatIds()).containsExactly(seatId);
-        assertThat(result.response().expiresAt()).isAfter(Instant.now());
-        // 7 min = 420s; allow a small jitter for cross-clock-read drift within the assertion.
-        assertThat(result.response().ttlSeconds()).isBetween(415L, 421L);
+            ReservationService.HoldResult result = service.hold(key, req);
+
+            assertThat(result.idempotentReplay()).isFalse();
+            assertThat(result.response().status()).isEqualTo("HELD");
+            assertThat(result.response().seatIds()).containsExactly(seatId);
+            assertThat(result.response().expiresAt()).isAfter(Instant.now());
+            assertThat(result.response().ttlSeconds()).isBetween(415L, 421L);
+        }
+
+        @Test
+        @DisplayName("AC2: unique-violation on seat maps to ConflictException with seat id in detail")
+        void hold_conflict_mapsToConflictException() {
+            UUID key = UUID.randomUUID();
+            UUID showId = UUID.randomUUID();
+            UUID seatId = UUID.randomUUID();
+            CreateReservationRequest req = new CreateReservationRequest(
+                    showId, UUID.randomUUID(), List.of(seatId));
+
+            when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
+            when(reservationRepository.saveAndFlush(any(Reservation.class)))
+                    .thenThrow(new DataIntegrityViolationException("unique_violation"));
+            when(reservationSeatRepository.findFirstConflictingSeatId(eq(showId), eq(List.of(seatId))))
+                    .thenReturn(Optional.of(seatId));
+
+            assertThatThrownBy(() -> service.hold(key, req))
+                    .isInstanceOf(ConflictException.class)
+                    .hasMessageContaining(seatId.toString())
+                    .hasMessageContaining("is already held");
+        }
+
+        @Test
+        @DisplayName("AC3: replay with same idempotency-key returns cached response, no new insert")
+        void hold_idempotentReplay() {
+            UUID key = UUID.randomUUID();
+            UUID showId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
+            UUID seatId = UUID.randomUUID();
+            Reservation existing = new Reservation(showId, userId, key);
+            existing.addSeat(seatId);
+
+            when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.of(existing));
+
+            ReservationService.HoldResult result =
+                    service.hold(key, new CreateReservationRequest(showId, userId, List.of(seatId)));
+
+            assertThat(result.idempotentReplay()).isTrue();
+            assertThat(result.response().seatIds()).containsExactly(seatId);
+            verifyNoInteractions(catalogClient);
+            verify(reservationRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("AC4: catalog 404 propagates as UnprocessableEntityException; no DB insert")
+        void hold_invalidSeats_bubblesUp422() {
+            UUID key = UUID.randomUUID();
+            UUID showId = UUID.randomUUID();
+            UUID seatId = UUID.randomUUID();
+            CreateReservationRequest req = new CreateReservationRequest(
+                    showId, UUID.randomUUID(), List.of(seatId));
+
+            when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
+            doThrow(new UnprocessableEntityException("invalid seats"))
+                    .when(catalogClient).validateSeatsForShow(showId, List.of(seatId));
+
+            assertThatThrownBy(() -> service.hold(key, req))
+                    .isInstanceOf(UnprocessableEntityException.class);
+            verify(reservationRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("Conflict race: unique-violation without a matching seat means idempotency-key collision under load")
+        void hold_conflict_withNoSeatMatch_returnsIdempotentReplay() {
+            UUID key = UUID.randomUUID();
+            UUID showId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
+            UUID seatId = UUID.randomUUID();
+            CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+
+            Reservation winner = new Reservation(showId, userId, key);
+            winner.addSeat(seatId);
+
+            when(reservationRepository.findByIdempotencyKey(key))
+                    .thenReturn(Optional.empty())
+                    .thenReturn(Optional.of(winner));
+            when(reservationRepository.saveAndFlush(any(Reservation.class)))
+                    .thenThrow(new DataIntegrityViolationException("unique_violation on idempotency_key"));
+            when(reservationSeatRepository.findFirstConflictingSeatId(showId, List.of(seatId)))
+                    .thenReturn(Optional.empty());
+
+            ReservationService.HoldResult result = service.hold(key, req);
+
+            assertThat(result.idempotentReplay()).isTrue();
+        }
     }
 
-    @Test
-    @DisplayName("AC2: unique-violation on seat maps to ConflictException with seat id in detail")
-    void hold_conflict_mapsToConflictException() {
-        UUID key = UUID.randomUUID();
-        UUID showId = UUID.randomUUID();
-        UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(
-                showId, UUID.randomUUID(), List.of(seatId));
+    @Nested
+    @DisplayName("confirm()")
+    class ConfirmTests {
 
-        when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
-        when(reservationRepository.saveAndFlush(any(Reservation.class)))
-                .thenThrow(new DataIntegrityViolationException("unique_violation"));
-        when(reservationSeatRepository.findFirstConflictingSeatId(eq(showId), eq(List.of(seatId))))
-                .thenReturn(Optional.of(seatId));
+        @Test
+        @DisplayName("AC2: confirm HELD reservation returns CONFIRMED with 200")
+        void confirm_heldReservation_succeeds() {
+            UUID reservationId = UUID.randomUUID();
+            Reservation reservation = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+            reservation.addSeat(UUID.randomUUID());
 
-        assertThatThrownBy(() -> service.hold(key, req))
-                .isInstanceOf(ConflictException.class)
-                .hasMessageContaining(seatId.toString())
-                .hasMessageContaining("is already held");
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+            when(reservationEventRepository.findMaxSeqByAggregateId(any())).thenReturn(Optional.empty());
+            when(reservationEventRepository.save(any(ReservationEvent.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(reservationRepository.save(any(Reservation.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            ReservationResponse response = service.confirm(reservationId, "PAY-123", "corr-1");
+
+            assertThat(response.status()).isEqualTo("CONFIRMED");
+            verify(holdMirrorService).remove(reservationId);
+            verify(reservationEventRepository).save(any(ReservationEvent.class));
+        }
+
+        @Test
+        @DisplayName("AC4: confirm non-HELD reservation throws 409")
+        void confirm_nonHeldReservation_throwsConflict() {
+            UUID reservationId = UUID.randomUUID();
+            Reservation reservation = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+            reservation.setStatus(com.stampedeio.booking.domain.ReservationStatus.EXPIRED);
+
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+
+            assertThatThrownBy(() -> service.confirm(reservationId, "PAY-123", "corr-1"))
+                    .isInstanceOf(IllegalStateTransitionException.class)
+                    .hasMessageContaining("EXPIRED")
+                    .hasMessageContaining("CONFIRMED");
+        }
+
+        @Test
+        @DisplayName("confirm non-existent reservation throws 404")
+        void confirm_notFound_throws404() {
+            UUID reservationId = UUID.randomUUID();
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.confirm(reservationId, "PAY-123", "corr-1"))
+                    .isInstanceOf(ResourceNotFoundException.class);
+        }
     }
 
-    @Test
-    @DisplayName("AC3: replay with same idempotency-key returns cached response, no new insert")
-    void hold_idempotentReplay() {
-        UUID key = UUID.randomUUID();
-        UUID showId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
-        UUID seatId = UUID.randomUUID();
-        Reservation existing = new Reservation(showId, userId, key);
-        existing.addSeat(seatId);
+    @Nested
+    @DisplayName("release()")
+    class ReleaseTests {
 
-        when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.of(existing));
+        @Test
+        @DisplayName("AC3: release HELD reservation returns RELEASED with 200")
+        void release_heldReservation_succeeds() {
+            UUID reservationId = UUID.randomUUID();
+            Reservation reservation = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+            reservation.addSeat(UUID.randomUUID());
 
-        ReservationService.HoldResult result =
-                service.hold(key, new CreateReservationRequest(showId, userId, List.of(seatId)));
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+            when(reservationEventRepository.findMaxSeqByAggregateId(any())).thenReturn(Optional.of(1));
+            when(reservationEventRepository.save(any(ReservationEvent.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+            when(reservationRepository.save(any(Reservation.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
 
-        assertThat(result.idempotentReplay()).isTrue();
-        assertThat(result.response().seatIds()).containsExactly(seatId);
-        verifyNoInteractions(catalogClient);
-        verify(reservationRepository, org.mockito.Mockito.never()).saveAndFlush(any());
-    }
+            ReservationResponse response = service.release(reservationId, "corr-2");
 
-    @Test
-    @DisplayName("AC4: catalog 404 propagates as UnprocessableEntityException; no DB insert")
-    void hold_invalidSeats_bubblesUp422() {
-        UUID key = UUID.randomUUID();
-        UUID showId = UUID.randomUUID();
-        UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(
-                showId, UUID.randomUUID(), List.of(seatId));
+            assertThat(response.status()).isEqualTo("RELEASED");
+            verify(holdMirrorService).remove(reservationId);
+            verify(reservationEventRepository).save(any(ReservationEvent.class));
+        }
 
-        when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
-        doThrow(new UnprocessableEntityException("invalid seats"))
-                .when(catalogClient).validateSeatsForShow(showId, List.of(seatId));
+        @Test
+        @DisplayName("AC4: release non-HELD reservation throws 409")
+        void release_nonHeldReservation_throwsConflict() {
+            UUID reservationId = UUID.randomUUID();
+            Reservation reservation = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+            reservation.setStatus(com.stampedeio.booking.domain.ReservationStatus.CONFIRMED);
 
-        assertThatThrownBy(() -> service.hold(key, req))
-                .isInstanceOf(UnprocessableEntityException.class);
-        verify(reservationRepository, org.mockito.Mockito.never()).saveAndFlush(any());
-    }
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
 
-    @Test
-    @DisplayName("Conflict race: unique-violation without a matching seat means idempotency-key collision under load")
-    void hold_conflict_withNoSeatMatch_returnsIdempotentReplay() {
-        UUID key = UUID.randomUUID();
-        UUID showId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
-        UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+            assertThatThrownBy(() -> service.release(reservationId, "corr-2"))
+                    .isInstanceOf(IllegalStateTransitionException.class)
+                    .hasMessageContaining("CONFIRMED")
+                    .hasMessageContaining("RELEASED");
+        }
 
-        Reservation winner = new Reservation(showId, userId, key);
-        winner.addSeat(seatId);
+        @Test
+        @DisplayName("release non-existent reservation throws 404")
+        void release_notFound_throws404() {
+            UUID reservationId = UUID.randomUUID();
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.empty());
 
-        // First lookup: not there yet (racing). Insert throws unique-violation.
-        // Seat conflict lookup: empty (the collision was on idempotency_key, not seat).
-        // Second lookup: the winner is now visible.
-        when(reservationRepository.findByIdempotencyKey(key))
-                .thenReturn(Optional.empty())
-                .thenReturn(Optional.of(winner));
-        when(reservationRepository.saveAndFlush(any(Reservation.class)))
-                .thenThrow(new DataIntegrityViolationException("unique_violation on idempotency_key"));
-        when(reservationSeatRepository.findFirstConflictingSeatId(showId, List.of(seatId)))
-                .thenReturn(Optional.empty());
-
-        ReservationService.HoldResult result = service.hold(key, req);
-
-        assertThat(result.idempotentReplay()).isTrue();
+            assertThatThrownBy(() -> service.release(reservationId, "corr-2"))
+                    .isInstanceOf(ResourceNotFoundException.class);
+        }
     }
 }
