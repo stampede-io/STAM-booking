@@ -1,5 +1,6 @@
 package com.stampedeio.booking.domain;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +21,8 @@ import jakarta.persistence.Version;
 @Entity
 @Table(name = "reservations")
 public class Reservation {
+
+    public static final Duration HOLD_TTL = Duration.ofMinutes(7);
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -104,5 +107,9 @@ public class Reservation {
 
     public List<ReservationSeat> getSeats() {
         return seats;
+    }
+
+    public Instant getExpiresAt() {
+        return createdAt.plus(HOLD_TTL);
     }
 }
