@@ -36,6 +36,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return pd;
     }
 
+    @ExceptionHandler(UnprocessableEntityException.class)
+    ProblemDetail handleUnprocessable(UnprocessableEntityException ex, ServletWebRequest request) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage());
+        pd.setTitle("Unprocessable Entity");
+        pd.setInstance(URI.create(request.getRequest().getRequestURI()));
+        return pd;
+    }
+
     @ExceptionHandler(ObjectOptimisticLockingFailureException.class)
     ProblemDetail handleOptimisticLock(ObjectOptimisticLockingFailureException ex,
                                       ServletWebRequest request) {
