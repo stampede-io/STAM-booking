@@ -22,8 +22,27 @@ spring:
 server:
   port: ${SERVER_PORT:8082}
 
+catalog:
+  base-url: ${CATALOG_URL:http://catalog:8081}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      catalogClient:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 5
+        minimum-number-of-calls: 3
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        register-health-indicator: true
+
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        resilience4j.circuitbreaker: true
