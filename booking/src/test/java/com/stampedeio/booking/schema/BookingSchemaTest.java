@@ -10,11 +10,15 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration;
+import org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -22,9 +26,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import com.stampedeio.booking.domain.Reservation;
 import com.stampedeio.booking.domain.ReservationSeat;
 import com.stampedeio.booking.repository.ReservationRepository;
+import com.stampedeio.booking.service.HoldMirrorService;
 
 @SpringBootTest
 @Testcontainers
+@EnableAutoConfiguration(exclude = {
+        DataRedisAutoConfiguration.class,
+        DataRedisRepositoriesAutoConfiguration.class
+})
 class BookingSchemaTest {
 
     @Container
@@ -43,6 +52,9 @@ class BookingSchemaTest {
 
     @Autowired
     private DataSource dataSource;
+
+    @MockitoBean
+    HoldMirrorService holdMirrorService;
 
     @Test
     @DisplayName("AC1: reservations table has version column, reservation_seats exists with partial unique index")
@@ -165,4 +177,5 @@ class BookingSchemaTest {
                 Integer.class);
         assertThat(tableExists).isEqualTo(1);
     }
+
 }
