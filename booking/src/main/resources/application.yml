@@ -5,6 +5,10 @@ spring:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:booking}
     username: ${DB_USERNAME:booking}
     password: ${DB_PASSWORD:booking}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
   flyway:
     enabled: true
   mvc:
