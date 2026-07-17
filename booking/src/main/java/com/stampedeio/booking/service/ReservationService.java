@@ -1,6 +1,7 @@
 package com.stampedeio.booking.service;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -25,15 +26,18 @@ public class ReservationService {
     private final ReservationRepository reservationRepository;
     private final ReservationSeatRepository reservationSeatRepository;
     private final CatalogClient catalogClient;
+    private final HoldMirrorService holdMirrorService;
     private final Clock clock;
 
     public ReservationService(ReservationRepository reservationRepository,
                               ReservationSeatRepository reservationSeatRepository,
                               CatalogClient catalogClient,
+                              HoldMirrorService holdMirrorService,
                               Clock clock) {
         this.reservationRepository = reservationRepository;
         this.reservationSeatRepository = reservationSeatRepository;
         this.catalogClient = catalogClient;
+        this.holdMirrorService = holdMirrorService;
         this.clock = clock;
     }
 
@@ -50,6 +54,8 @@ public class ReservationService {
 
         try {
             Reservation saved = reservationRepository.saveAndFlush(reservation);
+            long ttlSeconds = Duration.between(Instant.now(clock), saved.getExpiresAt()).getSeconds();
+            holdMirrorService.mirror(saved.getId(), ttlSeconds);
             return new HoldResult(ReservationResponse.from(saved, Instant.now(clock)), false);
         } catch (DataIntegrityViolationException ex) {
             UUID conflictingSeat = reservationSeatRepository

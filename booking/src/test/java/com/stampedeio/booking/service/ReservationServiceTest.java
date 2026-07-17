@@ -24,6 +24,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import com.stampedeio.booking.api.CreateReservationRequest;
 import com.stampedeio.booking.catalog.CatalogClient;
+import com.stampedeio.booking.service.HoldMirrorService;
 import com.stampedeio.booking.domain.Reservation;
 import com.stampedeio.booking.exception.ConflictException;
 import com.stampedeio.booking.exception.UnprocessableEntityException;
@@ -35,6 +36,7 @@ class ReservationServiceTest {
     private ReservationRepository reservationRepository;
     private ReservationSeatRepository reservationSeatRepository;
     private CatalogClient catalogClient;
+    private HoldMirrorService holdMirrorService;
     private ReservationService service;
 
     @BeforeEach
@@ -42,10 +44,10 @@ class ReservationServiceTest {
         reservationRepository = mock(ReservationRepository.class);
         reservationSeatRepository = mock(ReservationSeatRepository.class);
         catalogClient = mock(CatalogClient.class);
-        // Use system clock — Reservation.createdAt is set from Instant.now() at construction,
-        // so the derived expiresAt has to be compared against wall-clock time too.
+        holdMirrorService = mock(HoldMirrorService.class);
         service = new ReservationService(
-                reservationRepository, reservationSeatRepository, catalogClient, Clock.systemUTC());
+                reservationRepository, reservationSeatRepository, catalogClient,
+                holdMirrorService, Clock.systemUTC());
     }
 
     @Test

@@ -48,6 +48,9 @@ public class Reservation {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
+    @Column(name = "expires_at", nullable = false, updatable = false)
+    private Instant expiresAt = createdAt.plus(HOLD_TTL);
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
 
@@ -110,6 +113,6 @@ public class Reservation {
     }
 
     public Instant getExpiresAt() {
-        return createdAt.plus(HOLD_TTL);
+        return expiresAt;
     }
 }
