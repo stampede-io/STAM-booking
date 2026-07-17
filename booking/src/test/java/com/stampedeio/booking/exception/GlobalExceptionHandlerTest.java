@@ -12,6 +12,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+import com.stampedeio.booking.service.ReservationService;
 import org.springframework.http.MediaType;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
@@ -30,6 +33,9 @@ class GlobalExceptionHandlerTest {
 
     @Autowired
     private MockMvc mvc;
+
+    @MockitoBean
+    ReservationService reservationService;
 
     @Test
     @DisplayName("404 returns problem+json with correct fields")
