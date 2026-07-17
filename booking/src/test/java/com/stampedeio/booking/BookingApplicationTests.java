@@ -12,6 +12,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.stampedeio.booking.catalog.CatalogClient;
 import com.stampedeio.booking.repository.ReservationRepository;
+import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
 import com.stampedeio.booking.service.HoldMirrorService;
 
@@ -30,6 +31,9 @@ class BookingApplicationTests {
 
     @MockitoBean
     ReservationSeatRepository reservationSeatRepository;
+
+    @MockitoBean
+    ReservationEventRepository reservationEventRepository;
 
     @MockitoBean
     CatalogClient catalogClient;

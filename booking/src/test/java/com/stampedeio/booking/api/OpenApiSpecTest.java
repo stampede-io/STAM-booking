@@ -22,6 +22,7 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import com.stampedeio.booking.catalog.CatalogClient;
 import com.stampedeio.booking.repository.ReservationRepository;
+import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
 import com.stampedeio.booking.service.HoldMirrorService;
 
@@ -44,6 +45,9 @@ class OpenApiSpecTest {
 
     @MockitoBean
     ReservationSeatRepository reservationSeatRepository;
+
+    @MockitoBean
+    ReservationEventRepository reservationEventRepository;
 
     @MockitoBean
     CatalogClient catalogClient;
