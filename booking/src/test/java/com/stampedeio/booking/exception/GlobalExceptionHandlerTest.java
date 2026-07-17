@@ -11,7 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -54,6 +56,31 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    @DisplayName("OptimisticLockException returns 409 problem+json")
+    void optimisticLock_returns409() throws Exception {
+        mvc.perform(get("/test/optimistic-lock"))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Conflict"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.detail").value(
+                        "Concurrent modification detected; please retry the operation"))
+                .andExpect(jsonPath("$.instance").value("/test/optimistic-lock"));
+    }
+
+    @Test
+    @DisplayName("DataIntegrityViolationException returns 409 problem+json")
+    void dataIntegrity_returns409() throws Exception {
+        mvc.perform(get("/test/data-integrity"))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Conflict"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.detail").value("Seat is already reserved"))
+                .andExpect(jsonPath("$.instance").value("/test/data-integrity"));
+    }
+
+    @Test
     @DisplayName("400 validation error returns problem+json listing violations")
     void validationError_returnsProblemJson() throws Exception {
         mvc.perform(post("/test/validate")
@@ -78,6 +105,16 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/test/conflict")
         void conflict() {
             throw new ConflictException("Seat already reserved");
+        }
+
+        @GetMapping("/test/optimistic-lock")
+        void optimisticLock() {
+            throw new ObjectOptimisticLockingFailureException("Reservation", null);
+        }
+
+        @GetMapping("/test/data-integrity")
+        void dataIntegrity() {
+            throw new DataIntegrityViolationException("unique_violation");
         }
 
         @PostMapping("/test/validate")
