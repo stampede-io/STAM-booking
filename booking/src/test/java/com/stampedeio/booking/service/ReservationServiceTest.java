@@ -32,6 +32,9 @@ import com.stampedeio.booking.exception.ConflictException;
 import com.stampedeio.booking.exception.IllegalStateTransitionException;
 import com.stampedeio.booking.exception.ResourceNotFoundException;
 import com.stampedeio.booking.exception.UnprocessableEntityException;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
@@ -41,8 +44,10 @@ class ReservationServiceTest {
     private ReservationRepository reservationRepository;
     private ReservationSeatRepository reservationSeatRepository;
     private ReservationEventRepository reservationEventRepository;
+    private OutboxRepository outboxRepository;
     private CatalogClient catalogClient;
     private HoldMirrorService holdMirrorService;
+    private TransactionTemplate transactionTemplate;
     private ReservationService service;
 
     @BeforeEach
@@ -50,11 +55,21 @@ class ReservationServiceTest {
         reservationRepository = mock(ReservationRepository.class);
         reservationSeatRepository = mock(ReservationSeatRepository.class);
         reservationEventRepository = mock(ReservationEventRepository.class);
+        outboxRepository = mock(OutboxRepository.class);
         catalogClient = mock(CatalogClient.class);
         holdMirrorService = mock(HoldMirrorService.class);
+        transactionTemplate = mock(TransactionTemplate.class);
+        when(transactionTemplate.execute(any())).thenAnswer(inv -> {
+            org.springframework.transaction.support.TransactionCallback<?> callback = inv.getArgument(0);
+            return callback.doInTransaction(null);
+        });
+        when(reservationEventRepository.findMaxSeqByAggregateId(any())).thenReturn(Optional.empty());
+        when(reservationEventRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(outboxRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         service = new ReservationService(
                 reservationRepository, reservationSeatRepository, reservationEventRepository,
-                catalogClient, holdMirrorService, Clock.systemUTC());
+                outboxRepository, catalogClient, holdMirrorService, transactionTemplate,
+                Clock.systemUTC());
     }
 
     @Nested

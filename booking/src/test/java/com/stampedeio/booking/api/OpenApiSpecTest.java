@@ -20,7 +20,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import org.springframework.transaction.support.TransactionTemplate;
+
 import com.stampedeio.booking.catalog.CatalogClient;
+import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
@@ -50,10 +53,16 @@ class OpenApiSpecTest {
     ReservationEventRepository reservationEventRepository;
 
     @MockitoBean
+    OutboxRepository outboxRepository;
+
+    @MockitoBean
     CatalogClient catalogClient;
 
     @MockitoBean
     HoldMirrorService holdMirrorService;
+
+    @MockitoBean
+    TransactionTemplate transactionTemplate;
 
     @Test
     void generateOpenApiSpec() throws Exception {
