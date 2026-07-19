@@ -138,9 +138,13 @@ public class ReservationService {
     }
 
     void appendOutbox(Reservation reservation, String eventType, String correlationId) {
+        String seatIds = reservation.getSeats().stream()
+                .map(s -> "\"" + s.getSeatId() + "\"")
+                .collect(java.util.stream.Collectors.joining(","));
         String payload = "{\"reservationId\":\"" + reservation.getId()
                 + "\",\"showId\":\"" + reservation.getShowId()
-                + "\",\"status\":\"" + reservation.getStatus()
+                + "\",\"seatIds\":[" + seatIds + "]"
+                + ",\"status\":\"" + reservation.getStatus()
                 + "\",\"correlationId\":\"" + correlationId + "\"}";
         outboxRepository.save(new OutboxMessage("Reservation", reservation.getId(), eventType, payload));
     }
