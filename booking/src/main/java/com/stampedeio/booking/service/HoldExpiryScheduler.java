@@ -63,6 +63,7 @@ public class HoldExpiryScheduler {
 
             String correlationId = UUID.randomUUID().toString();
             reservationService.appendEvent(reservation, "RESERVATION_EXPIRED", correlationId, null);
+            reservationService.appendOutbox(reservation, "HoldExpired", correlationId);
         }
         reservationRepository.saveAll(expired);
         log.info("Expired {} stale hold(s)", expired.size());
