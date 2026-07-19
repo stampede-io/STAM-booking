@@ -10,6 +10,7 @@ import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.stampedeio.booking.api.CreateReservationRequest;
 import com.stampedeio.booking.api.ReservationResponse;
@@ -21,6 +22,8 @@ import com.stampedeio.booking.domain.ReservationStatus;
 import com.stampedeio.booking.domain.SeatHoldStatus;
 import com.stampedeio.booking.exception.ConflictException;
 import com.stampedeio.booking.exception.ResourceNotFoundException;
+import com.stampedeio.booking.domain.OutboxMessage;
+import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
@@ -31,21 +34,27 @@ public class ReservationService {
     private final ReservationRepository reservationRepository;
     private final ReservationSeatRepository reservationSeatRepository;
     private final ReservationEventRepository reservationEventRepository;
+    private final OutboxRepository outboxRepository;
     private final CatalogClient catalogClient;
     private final HoldMirrorService holdMirrorService;
+    private final TransactionTemplate transactionTemplate;
     private final Clock clock;
 
     public ReservationService(ReservationRepository reservationRepository,
                               ReservationSeatRepository reservationSeatRepository,
                               ReservationEventRepository reservationEventRepository,
+                              OutboxRepository outboxRepository,
                               CatalogClient catalogClient,
                               HoldMirrorService holdMirrorService,
+                              TransactionTemplate transactionTemplate,
                               Clock clock) {
         this.reservationRepository = reservationRepository;
         this.reservationSeatRepository = reservationSeatRepository;
         this.reservationEventRepository = reservationEventRepository;
+        this.outboxRepository = outboxRepository;
         this.catalogClient = catalogClient;
         this.holdMirrorService = holdMirrorService;
+        this.transactionTemplate = transactionTemplate;
         this.clock = clock;
     }
 
@@ -61,7 +70,14 @@ public class ReservationService {
         request.seatIds().forEach(reservation::addSeat);
 
         try {
-            Reservation saved = reservationRepository.saveAndFlush(reservation);
+            Reservation saved = transactionTemplate.execute(status -> {
+                Reservation persisted = reservationRepository.saveAndFlush(reservation);
+                String correlationId = UUID.randomUUID().toString();
+                appendEvent(persisted, "SEATS_HELD", correlationId, null);
+                appendOutbox(persisted, "SeatsHeld", correlationId);
+                return persisted;
+            });
+
             long ttlSeconds = Duration.between(Instant.now(clock), saved.getExpiresAt()).getSeconds();
             holdMirrorService.mirror(saved.getId(), ttlSeconds);
             return new HoldResult(ReservationResponse.from(saved, Instant.now(clock)), false);
@@ -91,6 +107,7 @@ public class ReservationService {
         holdMirrorService.remove(reservationId);
 
         appendEvent(reservation, "RESERVATION_CONFIRMED", correlationId, paymentReference);
+        appendOutbox(reservation, "ReservationConfirmed", correlationId);
 
         return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
     }
@@ -108,6 +125,7 @@ public class ReservationService {
         holdMirrorService.remove(reservationId);
 
         appendEvent(reservation, "RESERVATION_RELEASED", correlationId, null);
+        appendOutbox(reservation, "SeatsReleased", correlationId);
 
         return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
     }
@@ -117,6 +135,14 @@ public class ReservationService {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
         return ReservationResponse.from(reservation, Instant.now(clock));
+    }
+
+    void appendOutbox(Reservation reservation, String eventType, String correlationId) {
+        String payload = "{\"reservationId\":\"" + reservation.getId()
+                + "\",\"showId\":\"" + reservation.getShowId()
+                + "\",\"status\":\"" + reservation.getStatus()
+                + "\",\"correlationId\":\"" + correlationId + "\"}";
+        outboxRepository.save(new OutboxMessage("Reservation", reservation.getId(), eventType, payload));
     }
 
     void appendEvent(Reservation reservation, String eventType, String correlationId,
