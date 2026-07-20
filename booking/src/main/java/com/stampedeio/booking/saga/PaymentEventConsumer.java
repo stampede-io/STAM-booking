@@ -30,6 +30,7 @@ public class PaymentEventConsumer {
         switch (eventType) {
             case "PaymentAuthorized" -> sagaOrchestrator.handlePaymentAuthorized(aggregateId, correlationId);
             case "PaymentFailed" -> sagaOrchestrator.handlePaymentFailed(aggregateId, correlationId);
+            case "RefundIssued" -> sagaOrchestrator.handleRefundIssued(aggregateId, correlationId);
             default -> log.warn("Unknown payment event type: {}", eventType);
         }
     }
