@@ -1,0 +1,2 @@
+-- Booking service baseline migration
+-- Schema will be added in V2 (STAM-109)
