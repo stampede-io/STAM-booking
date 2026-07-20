@@ -81,12 +81,27 @@ public class BookingSagaOrchestrator {
                 .orElseThrow(() -> new IllegalStateException(
                         "No saga found for reservation " + reservationId));
 
-        if (SagaState.COMPLETED.name().equals(saga.getState())) {
-            log.info("Saga already completed for reservation={}, ignoring duplicate", reservationId);
+        if (SagaState.COMPLETED.name().equals(saga.getState())
+                || SagaState.COMPENSATED.name().equals(saga.getState())) {
+            log.info("Saga already terminal for reservation={}, ignoring duplicate", reservationId);
             return;
         }
 
         Reservation reservation = saga.getReservation();
+
+        if (reservation.getStatus() == ReservationStatus.EXPIRED) {
+            log.warn("Late PaymentAuthorized for EXPIRED reservation={}, issuing refund", reservationId);
+            saga.advance(SagaState.COMPENSATING, "LATE_AUTH_REFUND_REQUESTED");
+
+            UUID refundCorrelationId = UUID.randomUUID();
+            String commandPayload = buildPayload(reservation, refundCorrelationId);
+            outboxRepository.save(new OutboxMessage(
+                    "Reservation", reservation.getId(), "RefundPayment", commandPayload,
+                    refundCorrelationId, TOPIC_PAYMENTS_COMMANDS));
+
+            sagaInstanceRepository.save(saga);
+            return;
+        }
 
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.CONFIRMED);
         reservation.setStatus(ReservationStatus.CONFIRMED);
@@ -107,6 +122,37 @@ public class BookingSagaOrchestrator {
         sagaInstanceRepository.save(saga);
 
         log.info("Saga completed for reservation={} correlationId={}", reservationId, correlationId);
+    }
+
+    @Transactional
+    public void handleRefundIssued(UUID reservationId, UUID correlationId) {
+        SagaInstance saga = sagaInstanceRepository.findByReservationId(reservationId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "No saga found for reservation " + reservationId));
+
+        if (SagaState.COMPENSATED.name().equals(saga.getState())) {
+            log.info("Saga already compensated for reservation={}, ignoring duplicate RefundIssued", reservationId);
+            return;
+        }
+
+        Reservation reservation = saga.getReservation();
+
+        ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.REFUNDED);
+        reservation.setStatus(ReservationStatus.REFUNDED);
+        reservationRepository.save(reservation);
+
+        reservationService.appendEvent(reservation, "PAYMENT_REFUNDED",
+                correlationId.toString(), null);
+
+        String eventPayload = buildPayload(reservation, correlationId);
+        outboxRepository.save(new OutboxMessage(
+                "Reservation", reservation.getId(), "PaymentRefunded", eventPayload,
+                correlationId, TOPIC_RESERVATIONS_EVENTS));
+
+        saga.advance(SagaState.COMPENSATED, "REFUND_ISSUED");
+        sagaInstanceRepository.save(saga);
+
+        log.info("Saga compensated (refund) for reservation={} correlationId={}", reservationId, correlationId);
     }
 
     @Transactional
