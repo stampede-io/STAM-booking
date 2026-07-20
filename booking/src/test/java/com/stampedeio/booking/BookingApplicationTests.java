@@ -17,6 +17,7 @@ import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationSeatRepository;
+import com.stampedeio.booking.repository.SagaInstanceRepository;
 import com.stampedeio.booking.service.HoldMirrorService;
 
 @SpringBootTest
@@ -43,6 +44,9 @@ class BookingApplicationTests {
 
     @MockitoBean
     CatalogClient catalogClient;
+
+    @MockitoBean
+    SagaInstanceRepository sagaInstanceRepository;
 
     @MockitoBean
     HoldMirrorService holdMirrorService;
