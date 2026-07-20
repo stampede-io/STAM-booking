@@ -1,6 +1,7 @@
 package com.stampedeio.booking.event;
 
 import java.util.List;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,8 +17,6 @@ import com.stampedeio.booking.repository.OutboxRepository;
 public class OutboxPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxPublisher.class);
-    private static final String TOPIC = "reservations.events";
-
     private final OutboxRepository outboxRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
@@ -36,15 +35,16 @@ public class OutboxPublisher {
         }
 
         for (OutboxMessage msg : pending) {
+            UUID correlationId = msg.getCorrelationId() != null ? msg.getCorrelationId() : msg.getId();
             EventEnvelope envelope = EventEnvelope.create(
                     msg.getEventType(),
                     1,
-                    msg.getId(),
+                    correlationId,
                     msg.getAggregateId(),
                     msg.getPayload()
             );
 
-            kafkaTemplate.send(TOPIC, msg.getAggregateId().toString(), envelope);
+            kafkaTemplate.send(msg.getTopic(), msg.getAggregateId().toString(), envelope);
             msg.markPublished();
         }
 

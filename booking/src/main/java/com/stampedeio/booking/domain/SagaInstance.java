@@ -3,6 +3,9 @@ package com.stampedeio.booking.domain;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -31,6 +34,10 @@ public class SagaInstance {
     @Column(nullable = false, length = 40)
     private String state = "STARTED";
 
+    @Column(nullable = false, length = 60)
+    private String step = "INIT";
+
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(nullable = false, columnDefinition = "jsonb")
     private String payload = "{}";
 
@@ -66,6 +73,21 @@ public class SagaInstance {
 
     public void setState(String state) {
         this.state = state;
+        this.updatedAt = Instant.now();
+    }
+
+    public String getStep() {
+        return step;
+    }
+
+    public void setStep(String step) {
+        this.step = step;
+        this.updatedAt = Instant.now();
+    }
+
+    public void advance(SagaState newState, String newStep) {
+        this.state = newState.name();
+        this.step = newStep;
         this.updatedAt = Instant.now();
     }
 
