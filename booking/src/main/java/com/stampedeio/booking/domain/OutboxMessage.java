@@ -34,6 +34,12 @@ public class OutboxMessage {
     @Column(nullable = false, columnDefinition = "jsonb")
     private String payload;
 
+    @Column(name = "correlation_id")
+    private UUID correlationId;
+
+    @Column(nullable = false, length = 120)
+    private String topic = "reservations.events";
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
@@ -48,6 +54,16 @@ public class OutboxMessage {
         this.aggregateId = aggregateId;
         this.eventType = eventType;
         this.payload = payload;
+    }
+
+    public OutboxMessage(String aggregateType, UUID aggregateId, String eventType, String payload,
+                         UUID correlationId, String topic) {
+        this.aggregateType = aggregateType;
+        this.aggregateId = aggregateId;
+        this.eventType = eventType;
+        this.payload = payload;
+        this.correlationId = correlationId;
+        this.topic = topic;
     }
 
     public UUID getId() {
@@ -76,6 +92,14 @@ public class OutboxMessage {
 
     public Instant getPublishedAt() {
         return publishedAt;
+    }
+
+    public UUID getCorrelationId() {
+        return correlationId;
+    }
+
+    public String getTopic() {
+        return topic;
     }
 
     public void markPublished() {

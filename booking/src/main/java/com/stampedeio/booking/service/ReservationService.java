@@ -137,7 +137,7 @@ public class ReservationService {
         return ReservationResponse.from(reservation, Instant.now(clock));
     }
 
-    void appendOutbox(Reservation reservation, String eventType, String correlationId) {
+    public void appendOutbox(Reservation reservation, String eventType, String correlationId) {
         String seatIds = reservation.getSeats().stream()
                 .map(s -> "\"" + s.getSeatId() + "\"")
                 .collect(java.util.stream.Collectors.joining(","));
@@ -146,11 +146,14 @@ public class ReservationService {
                 + "\",\"seatIds\":[" + seatIds + "]"
                 + ",\"status\":\"" + reservation.getStatus()
                 + "\",\"correlationId\":\"" + correlationId + "\"}";
-        outboxRepository.save(new OutboxMessage("Reservation", reservation.getId(), eventType, payload));
+        UUID corrId = parseUuidOrNull(correlationId);
+        outboxRepository.save(new OutboxMessage(
+                "Reservation", reservation.getId(), eventType, payload,
+                corrId, "reservations.events"));
     }
 
-    void appendEvent(Reservation reservation, String eventType, String correlationId,
-                     String paymentReference) {
+    public void appendEvent(Reservation reservation, String eventType, String correlationId,
+                            String paymentReference) {
         int nextSeq = reservationEventRepository.findMaxSeqByAggregateId(reservation.getId())
                 .map(s -> s + 1)
                 .orElse(1);
@@ -167,6 +170,15 @@ public class ReservationService {
 
         reservationEventRepository.save(
                 new ReservationEvent(reservation.getId(), nextSeq, eventType, payload.toString()));
+    }
+
+    private static UUID parseUuidOrNull(String value) {
+        if (value == null) return null;
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     public record HoldResult(ReservationResponse response, boolean idempotentReplay) {
