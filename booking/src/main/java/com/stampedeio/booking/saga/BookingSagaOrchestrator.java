@@ -191,6 +191,48 @@ public class BookingSagaOrchestrator {
         log.info("Saga compensated for reservation={} correlationId={}", reservationId, correlationId);
     }
 
+    @Transactional
+    public void recoverStaleSaga(UUID sagaId) {
+        SagaInstance saga = sagaInstanceRepository.findById(sagaId)
+                .orElseThrow(() -> new IllegalStateException("Saga not found: " + sagaId));
+        String state = saga.getState();
+        Reservation reservation = saga.getReservation();
+
+        if (SagaState.PAYMENT_REQUESTED.name().equals(state)) {
+            UUID correlationId = UUID.randomUUID();
+            String commandPayload = buildPayload(reservation, correlationId);
+            outboxRepository.save(new OutboxMessage(
+                    "Reservation", reservation.getId(), "AuthorizePayment", commandPayload,
+                    correlationId, TOPIC_PAYMENTS_COMMANDS));
+            saga.setStep("RECOVERY_REEMIT_AUTHORIZE_PAYMENT");
+            sagaInstanceRepository.save(saga);
+            log.info("Recovery: re-emitted AuthorizePayment for saga={} reservation={}",
+                    saga.getId(), reservation.getId());
+            return;
+        }
+
+        if (reservation.getStatus() == ReservationStatus.HELD) {
+            ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.RELEASED);
+            reservation.setStatus(ReservationStatus.RELEASED);
+            reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.RELEASED));
+            reservationRepository.save(reservation);
+            holdMirrorService.remove(reservation.getId());
+
+            UUID correlationId = UUID.randomUUID();
+            reservationService.appendEvent(reservation, "RESERVATION_RELEASED",
+                    correlationId.toString(), null);
+
+            String eventPayload = buildPayload(reservation, correlationId);
+            outboxRepository.save(new OutboxMessage(
+                    "Reservation", reservation.getId(), "SeatsReleased", eventPayload,
+                    correlationId, TOPIC_RESERVATIONS_EVENTS));
+        }
+
+        saga.advance(SagaState.COMPENSATED, "RECOVERY_SWEEP_COMPENSATED");
+        sagaInstanceRepository.save(saga);
+        log.info("Recovery: compensated saga={} reservation={}", saga.getId(), reservation.getId());
+    }
+
     private String buildPayload(Reservation reservation, UUID correlationId) {
         String seatIds = reservation.getSeats().stream()
                 .map(s -> "\"" + s.getSeatId() + "\"")
