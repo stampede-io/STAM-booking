@@ -32,7 +32,7 @@ public class RestCatalogClient implements CatalogClient {
     }
 
     @SuppressWarnings("unused")
-    private void validateFallback(UUID showId, List<UUID> seatIds, Exception ex) {
+    public void validateFallback(UUID showId, List<UUID> seatIds, Exception ex) {
         if (ex instanceof UnprocessableEntityException) {
             throw (UnprocessableEntityException) ex;
         }
