@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.stampedeio.booking.saga.BookingSagaOrchestrator;
 import com.stampedeio.booking.service.ReservationService;
 import com.stampedeio.booking.service.ReservationService.HoldResult;
 
@@ -31,9 +32,12 @@ import jakarta.validation.Valid;
 public class ReservationController {
 
     private final ReservationService reservationService;
+    private final BookingSagaOrchestrator sagaOrchestrator;
 
-    public ReservationController(ReservationService reservationService) {
+    public ReservationController(ReservationService reservationService,
+                                 BookingSagaOrchestrator sagaOrchestrator) {
         this.reservationService = reservationService;
+        this.sagaOrchestrator = sagaOrchestrator;
     }
 
     @PostMapping
@@ -100,6 +104,19 @@ public class ReservationController {
 
         String corrId = correlationId != null ? correlationId : UUID.randomUUID().toString();
         return reservationService.release(reservationId, corrId);
+    }
+
+    @PostMapping("/{reservationId}/submit-payment")
+    @Operation(summary = "Submit payment for a held reservation",
+            description = "Starts the booking saga: emits AuthorizePayment command to the payment service. "
+                    + "Idempotent — calling again returns the existing saga.")
+    @ApiResponse(responseCode = "202", description = "Payment flow initiated")
+    @ApiResponse(responseCode = "404", description = "Reservation not found",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<Void> submitPayment(@PathVariable UUID reservationId) {
+        sagaOrchestrator.startSaga(reservationId);
+        return ResponseEntity.accepted().build();
     }
 
     @GetMapping("/{reservationId}")

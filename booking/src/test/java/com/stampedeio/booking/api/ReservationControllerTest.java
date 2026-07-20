@@ -27,6 +27,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stampedeio.booking.saga.BookingSagaOrchestrator;
 import com.stampedeio.booking.exception.ConflictException;
 import com.stampedeio.booking.exception.GlobalExceptionHandler;
 import com.stampedeio.booking.exception.IllegalStateTransitionException;
@@ -47,6 +48,9 @@ class ReservationControllerTest {
 
     @MockitoBean
     private ReservationService reservationService;
+
+    @MockitoBean
+    private BookingSagaOrchestrator sagaOrchestrator;
 
     @Nested
     @DisplayName("POST /api/v1/reservations (hold)")

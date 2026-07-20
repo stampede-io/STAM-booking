@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.stampedeio.booking.saga.BookingSagaOrchestrator;
 import com.stampedeio.booking.service.ReservationService;
 import org.springframework.http.MediaType;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -36,6 +37,9 @@ class GlobalExceptionHandlerTest {
 
     @MockitoBean
     ReservationService reservationService;
+
+    @MockitoBean
+    BookingSagaOrchestrator sagaOrchestrator;
 
     @Test
     @DisplayName("404 returns problem+json with correct fields")
