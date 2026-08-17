@@ -6,3 +6,13 @@ spring:
 eureka:
   client:
     enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        resilience4j.circuitbreaker: true
