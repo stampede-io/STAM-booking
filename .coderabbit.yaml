@@ -1,0 +1,132 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for STAM-booking
+# This is the oversell-prevention core. Correctness here is the product.
+# https://docs.coderabbit.ai/reference/configuration
+
+language: en-US
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "Dev"
+      - "main"
+
+  path_filters:
+    - "!**/target/**"
+    - "!**/.idea/**"
+    - "!**/HELP.md"
+    # NOTE: db/migration/** is deliberately NOT filtered out. In this repo the
+    # migrations ARE the correctness guarantee - see the instructions below.
+
+  path_instructions:
+    - path: "booking/src/main/resources/db/migration/*.sql"
+      instructions: >
+        These migrations carry the oversell invariant. V2__booking_schema.sql
+        defines the partial unique index
+        `idx_reservation_seats_oversell_guard ON reservation_seats (show_id,
+        seat_id) WHERE status IN ('HELD','CONFIRMED')`. This is the single most
+        important line in the repository. NEVER suggest replacing it with an
+        application-level check, SELECT ... FOR UPDATE, an advisory lock, or
+        optimistic versioning "for performance" - the constraint violation
+        under contention is the intended mechanism, surfaced as HTTP 409.
+        Flag as a must-fix: (1) any edit to an ALREADY MERGED migration
+        file - Flyway is forward-only, changes go in a new V<n>__ file;
+        (2) any change that drops, renames, or narrows the oversell guard's
+        predicate or column list; (3) any new reservation_seats status value
+        added to the CHECK constraint without a matching update to the guard's
+        WHERE clause - a fourth status silently opens an oversell hole;
+        (4) migrations that are not idempotent-safe to re-run in CI.
+
+    - path: "booking/src/main/java/com/stampedeio/booking/saga/**"
+      instructions: >
+        Orchestrated saga per ADR-0002. The state machine lives here and
+        nowhere else. Implemented states: STARTED (SQL default) ->
+        PAYMENT_REQUESTED -> COMPLETED, with COMPENSATING -> COMPENSATED on
+        the failure branch. SagaState.CONFIRMED and SagaState.STARTED are dead
+        enum constants - flag new code that starts depending on them without
+        wiring them properly. Commands emitted: AuthorizePayment,
+        RefundPayment. Events emitted: ReservationConfirmed, PaymentRefunded,
+        SeatsReleased. Flag: (1) any compensation path added outside this
+        package - compensation must stay co-located with the forward logic;
+        (2) any state transition that does not persist to saga_instances
+        before returning; (3) any saga transition that does not log at INFO
+        with the correlationId - a saga you cannot trace is a saga you cannot
+        debug during a demo; (4) any handler missing the terminal-state guard
+        (COMPLETED/COMPENSATED must be idempotent no-ops on redelivery).
+
+    - path: "booking/src/main/java/com/stampedeio/booking/**"
+      instructions: >
+        Transactional outbox is mandatory. Business state and the outbox row
+        must be written in the SAME transaction; a separate publisher ships to
+        Kafka. Flag as a must-fix ANY kafkaTemplate.send() or direct
+        producer call inside a @Transactional method or inside a service that
+        also writes business state - that is the exact bug the outbox exists
+        to prevent. Events must be wrapped in EventEnvelope (eventId,
+        eventType, version, occurredAt, correlationId, aggregateId, payload);
+        flag bare payloads published to Kafka. Reservation status transitions
+        must go through ReservationStateMachine.transition() - flag any code
+        that sets status directly or relaxes a caller-side check instead of
+        adding the transition to the state machine. Flag blocking calls to
+        catalog that are not behind the Resilience4j `catalogClient` circuit
+        breaker. Redis is a cache and TTL mirror only - flag any logic that
+        treats a Redis miss as authoritative rather than falling back to
+        Postgres.
+
+    - path: "booking/src/test/java/**"
+      instructions: >
+        These tests are the deliverable, not scaffolding. ContentionIT,
+        ReservationServiceConcurrencyTest, OutboxIT, SagaRecoveryIT,
+        LateAuthAfterExpiryIT, PaymentFailedCompensationIT,
+        HoldExpireMidSagaIT and CircuitBreakerIT each prove a claim the
+        project makes publicly. Flag as a must-fix any change that
+        weakens them rather than fixing the code: reduced thread or iteration
+        counts, added @Disabled or @Ignore, loosened or deleted assertions,
+        widened timeouts to mask a race, or a Testcontainers dependency
+        swapped for a mock at the Postgres/Kafka/Redis boundary. If a flagship
+        test starts failing, the correct response is to fix the production
+        code. New concurrency tests should assert an exact winner count, not
+        a range.
+
+    - path: "**/*.{yml,yaml}"
+      instructions: >
+        spring.jpa.hibernate.ddl-auto must remain `validate` - flag any change
+        to `update` or `create`. Flag Hikari pool or Tomcat thread changes
+        that are not justified in the PR description; these are tuned against
+        the flash-sale load test and changing them invalidates the published
+        numbers. Flag any hardcoded credential or connection string. A
+        ${VAR:default} reference is only acceptable when `default` is itself
+        non-sensitive (a hostname, a port, an empty string) - a default that
+        is a usable password, key, or full connection string is still a
+        committed secret and must be flagged.
+
+  tools:
+    gitleaks:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    actionlint:
+      enabled: true
+    hadolint:
+      enabled: true
+    semgrep:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
