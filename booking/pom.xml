@@ -38,6 +38,8 @@
 		<!-- Tomcat CVE-2026-65182/-65905/-68525 CRITICAL. Remove once the Boot BOM is at or above this. -->
 		<tomcat.version>11.0.25</tomcat.version>
 		<postgresql.version>42.7.12</postgresql.version>
+		<!-- Spring Framework CVE-2026-47884 CRITICAL. Remove once the Boot BOM is at or above this. -->
+		<spring-framework.version>7.0.9</spring-framework.version>
 	</properties>
 
 	<dependencyManagement>
