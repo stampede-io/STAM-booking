@@ -33,7 +33,9 @@
 		<!-- Jackson CVE-2026-89407, -89425, -68497, -91776, -91777 (HIGH). Remove once the Boot BOM is at or above these. -->
 		<jackson-2-bom.version>2.21.7</jackson-2-bom.version>
 		<jackson-bom.version>3.1.7</jackson-bom.version>
+		<!-- Netty CVE-2026-75595 CRITICAL. Remove once the Boot BOM is at or above this. -->
 		<netty.version>4.2.17.Final</netty.version>
+		<!-- Tomcat CVE-2026-65182/-65905/-68525 CRITICAL. Remove once the Boot BOM is at or above this. -->
 		<tomcat.version>11.0.25</tomcat.version>
 		<postgresql.version>42.7.12</postgresql.version>
 	</properties>
