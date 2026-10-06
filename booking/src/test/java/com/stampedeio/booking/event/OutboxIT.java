@@ -84,8 +84,8 @@ class OutboxIT {
         UUID seatId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
 
-        var holdResult = reservationService.hold(idempotencyKey,
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        var holdResult = reservationService.hold(idempotencyKey, userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         List<OutboxMessage> unpublished = outboxRepository.findUnpublished();
@@ -113,8 +113,8 @@ class OutboxIT {
         UUID seatId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
 
-        var holdResult = reservationService.hold(idempotencyKey,
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        var holdResult = reservationService.hold(idempotencyKey, userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         List<OutboxMessage> beforeCrash = outboxRepository.findUnpublished();
@@ -141,8 +141,8 @@ class OutboxIT {
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
 
-        var holdResult = reservationService.hold(UUID.randomUUID(),
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        var holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         outboxPublisher.poll();
@@ -167,13 +167,13 @@ class OutboxIT {
         UUID seatId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
 
-        var holdResult = reservationService.hold(idempotencyKey,
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        var holdResult = reservationService.hold(idempotencyKey, userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         outboxPublisher.poll();
 
-        reservationService.confirm(reservationId, "PAY-REF-1", "corr-1");
+        reservationService.confirm(reservationId, userId, "PAY-REF-1", "corr-1");
 
         List<OutboxMessage> unpublished = outboxRepository.findUnpublished();
         assertThat(unpublished).hasSize(1);
@@ -198,13 +198,13 @@ class OutboxIT {
         UUID seatId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
 
-        var holdResult = reservationService.hold(idempotencyKey,
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        var holdResult = reservationService.hold(idempotencyKey, userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         outboxPublisher.poll();
 
-        reservationService.release(reservationId, "corr-2");
+        reservationService.release(reservationId, userId, "corr-2");
 
         List<OutboxMessage> unpublished = outboxRepository.findUnpublished();
         assertThat(unpublished).hasSize(1);

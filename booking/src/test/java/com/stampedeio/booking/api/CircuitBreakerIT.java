@@ -8,11 +8,20 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.UUID;
 
+import java.time.Instant;
+import java.util.Map;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -27,6 +36,7 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
 @Tag("integration")
+@Import(CircuitBreakerIT.StubJwtDecoderConfig.class)
 class CircuitBreakerIT {
 
     @Container
@@ -148,9 +158,28 @@ class CircuitBreakerIT {
                 .uri(URI.create("http://localhost:" + port + "/api/v1/reservations"))
                 .header("Content-Type", "application/json")
                 .header("Idempotency-Key", UUID.randomUUID().toString())
+                .header("Authorization", "Bearer " + UUID.randomUUID())
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * STAM-447: real HTTP client against a real embedded server, so it needs a
+     * real Authorization header. The decoder trusts the bearer value itself as
+     * the caller's user_id rather than standing up identity's JWKS endpoint here.
+     */
+    @TestConfiguration
+    static class StubJwtDecoderConfig {
+        @Bean
+        @Primary
+        JwtDecoder stubJwtDecoder() {
+            return token -> {
+                Instant now = Instant.now();
+                return new Jwt(token, now, now.plusSeconds(3600),
+                        Map.of("alg", "none"), Map.of("user_id", token, "sub", token));
+            };
+        }
     }
 }

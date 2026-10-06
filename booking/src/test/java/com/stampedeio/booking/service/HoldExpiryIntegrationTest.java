@@ -79,10 +79,9 @@ class HoldExpiryIntegrationTest {
     void hold_createsRedisMirrorKey() {
         UUID showId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        var request = new com.stampedeio.booking.api.CreateReservationRequest(
-                showId, UUID.randomUUID(), List.of(seatId));
+        var request = new com.stampedeio.booking.api.CreateReservationRequest(showId, List.of(seatId));
 
-        var result = reservationService.hold(UUID.randomUUID(), request);
+        var result = reservationService.hold(UUID.randomUUID(), UUID.randomUUID(), request);
 
         String key = "hold:" + result.response().reservationId();
         assertThat(redisTemplate.hasKey(key)).isTrue();

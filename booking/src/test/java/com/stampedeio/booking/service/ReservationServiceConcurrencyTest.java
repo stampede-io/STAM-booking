@@ -77,9 +77,8 @@ class ReservationServiceConcurrencyTest {
             pool.submit(() -> {
                 try {
                     startGate.await();
-                    CreateReservationRequest req = new CreateReservationRequest(
-                            showId, UUID.randomUUID(), List.of(seatId));
-                    reservationService.hold(UUID.randomUUID(), req);
+                    CreateReservationRequest req = new CreateReservationRequest(showId, List.of(seatId));
+                    reservationService.hold(UUID.randomUUID(), UUID.randomUUID(), req);
                     successes.incrementAndGet();
                 } catch (ConflictException ex) {
                     conflicts.incrementAndGet();

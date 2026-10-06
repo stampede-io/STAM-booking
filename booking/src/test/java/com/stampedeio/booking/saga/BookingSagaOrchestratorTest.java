@@ -73,7 +73,7 @@ class BookingSagaOrchestratorTest {
         when(sagaInstanceRepository.findByReservationId(reservationId)).thenReturn(Optional.empty());
         when(sagaInstanceRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        orchestrator.startSaga(reservationId);
+        orchestrator.startSaga(reservationId, reservation.getUserId());
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -89,7 +89,7 @@ class BookingSagaOrchestratorTest {
         when(sagaInstanceRepository.findByReservationId(reservationId)).thenReturn(Optional.empty());
         when(sagaInstanceRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        orchestrator.startSaga(reservationId);
+        orchestrator.startSaga(reservationId, reservation.getUserId());
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -107,7 +107,7 @@ class BookingSagaOrchestratorTest {
         when(sagaInstanceRepository.findByReservationId(reservationId)).thenReturn(Optional.empty());
         when(sagaInstanceRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        orchestrator.startSaga(reservationId);
+        orchestrator.startSaga(reservationId, reservation.getUserId());
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -122,7 +122,20 @@ class BookingSagaOrchestratorTest {
         reservation.setPaymentMethodId(null);
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
 
-        assertThrows(UnprocessableEntityException.class, () -> orchestrator.startSaga(reservationId));
+        assertThrows(UnprocessableEntityException.class,
+                () -> orchestrator.startSaga(reservationId, reservation.getUserId()));
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("STAM-447: startSaga() on another user's reservation throws 404, not 403")
+    void startSaga_notOwnedByCaller_throws404() {
+        UUID reservationId = UUID.randomUUID();
+        Reservation reservation = buildHeldReservation(reservationId);
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThrows(com.stampedeio.booking.exception.ResourceNotFoundException.class,
+                () -> orchestrator.startSaga(reservationId, UUID.randomUUID()));
         verify(outboxRepository, never()).save(any());
     }
 
@@ -135,7 +148,7 @@ class BookingSagaOrchestratorTest {
         when(sagaInstanceRepository.findByReservationId(reservationId)).thenReturn(Optional.empty());
         when(sagaInstanceRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        orchestrator.startSaga(reservationId);
+        orchestrator.startSaga(reservationId, reservation.getUserId());
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());

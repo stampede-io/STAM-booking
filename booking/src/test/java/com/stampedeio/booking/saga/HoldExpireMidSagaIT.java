@@ -95,16 +95,16 @@ class HoldExpireMidSagaIT {
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
 
-        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         outboxPublisher.poll();
 
-        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+        reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
 
         // Start saga — now in PAYMENT_REQUESTED
-        sagaOrchestrator.startSaga(reservationId);
+        sagaOrchestrator.startSaga(reservationId, userId);
         SagaInstance midFlight = sagaInstanceRepository.findByReservationId(reservationId).orElseThrow();
         assertThat(midFlight.getState()).isEqualTo(SagaState.PAYMENT_REQUESTED.name());
 
@@ -120,7 +120,7 @@ class HoldExpireMidSagaIT {
         holdExpiryScheduler.expireStaleHolds();
 
         // Verify reservation is EXPIRED
-        assertThat(reservationService.get(reservationId).status()).isEqualTo("EXPIRED");
+        assertThat(reservationService.get(reservationId, userId).status()).isEqualTo("EXPIRED");
 
         // Verify saga is COMPENSATED — not left in PAYMENT_REQUESTED (AC5)
         SagaInstance compensated = sagaInstanceRepository.findByReservationId(reservationId).orElseThrow();

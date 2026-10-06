@@ -88,16 +88,16 @@ class PaymentFailedCompensationIT {
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
 
-        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
         assertThat(holdResult.response().status()).isEqualTo("HELD");
 
         outboxPublisher.poll();
 
-        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+        reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
 
-        SagaInstance saga = sagaOrchestrator.startSaga(reservationId);
+        SagaInstance saga = sagaOrchestrator.startSaga(reservationId, userId);
         assertThat(saga.getState()).isEqualTo(SagaState.PAYMENT_REQUESTED.name());
 
         outboxPublisher.poll();
@@ -116,7 +116,7 @@ class PaymentFailedCompensationIT {
         sagaOrchestrator.handlePaymentFailed(reservationId, UUID.fromString(correlationId));
 
         // Verify reservation is RELEASED
-        assertThat(reservationService.get(reservationId).status()).isEqualTo("RELEASED");
+        assertThat(reservationService.get(reservationId, userId).status()).isEqualTo("RELEASED");
 
         // Verify saga is COMPENSATED with terminal step
         SagaInstance compensated = sagaInstanceRepository.findByReservationId(reservationId).orElseThrow();

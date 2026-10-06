@@ -5,6 +5,8 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.stampedeio.booking.config.CallerContext;
 import com.stampedeio.booking.saga.BookingSagaOrchestrator;
 import com.stampedeio.booking.service.ReservationService;
 import com.stampedeio.booking.service.ReservationService.HoldResult;
@@ -43,8 +46,8 @@ public class ReservationController {
     @PostMapping
     @Operation(
             summary = "Create (hold) a reservation",
-            description = "Holds seats for 7 minutes. If the Idempotency-Key was already used, "
-                    + "returns 200 with the original response instead of creating a duplicate.")
+            description = "Holds seats for 7 minutes for the authenticated caller. If the Idempotency-Key "
+                    + "was already used, returns 200 with the original response instead of creating a duplicate.")
     @ApiResponse(responseCode = "201", description = "Reservation created")
     @ApiResponse(responseCode = "200", description = "Idempotent replay: original response returned")
     @ApiResponse(responseCode = "400", description = "Invalid request body",
@@ -62,9 +65,10 @@ public class ReservationController {
                     required = true,
                     example = "550e8400-e29b-41d4-a716-446655440000")
             @RequestHeader("Idempotency-Key") UUID idempotencyKey,
+            @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody CreateReservationRequest request) {
 
-        HoldResult result = reservationService.hold(idempotencyKey, request);
+        HoldResult result = reservationService.hold(idempotencyKey, CallerContext.userId(jwt), request);
         HttpStatus status = result.idempotentReplay() ? HttpStatus.OK : HttpStatus.CREATED;
         return ResponseEntity.status(status).body(result.response());
     }
@@ -73,7 +77,7 @@ public class ReservationController {
     @Operation(summary = "Confirm a held reservation",
             description = "Transitions a HELD reservation to CONFIRMED with a payment reference.")
     @ApiResponse(responseCode = "200", description = "Reservation confirmed")
-    @ApiResponse(responseCode = "404", description = "Reservation not found",
+    @ApiResponse(responseCode = "404", description = "Reservation not found, or not owned by the caller",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "Illegal state transition",
@@ -81,18 +85,20 @@ public class ReservationController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     public ReservationResponse confirmReservation(
             @PathVariable UUID reservationId,
+            @AuthenticationPrincipal Jwt jwt,
             @RequestHeader(value = "X-Correlation-Id", required = false) String correlationId,
             @Valid @RequestBody ConfirmReservationRequest request) {
 
         String corrId = correlationId != null ? correlationId : UUID.randomUUID().toString();
-        return reservationService.confirm(reservationId, request.paymentReference(), corrId);
+        return reservationService.confirm(
+                reservationId, CallerContext.userId(jwt), request.paymentReference(), corrId);
     }
 
     @PatchMapping("/{reservationId}/release")
     @Operation(summary = "Release a held reservation",
             description = "Transitions a HELD reservation to RELEASED, freeing all seats.")
     @ApiResponse(responseCode = "200", description = "Reservation released")
-    @ApiResponse(responseCode = "404", description = "Reservation not found",
+    @ApiResponse(responseCode = "404", description = "Reservation not found, or not owned by the caller",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "Illegal state transition",
@@ -100,10 +106,11 @@ public class ReservationController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     public ReservationResponse releaseReservation(
             @PathVariable UUID reservationId,
+            @AuthenticationPrincipal Jwt jwt,
             @RequestHeader(value = "X-Correlation-Id", required = false) String correlationId) {
 
         String corrId = correlationId != null ? correlationId : UUID.randomUUID().toString();
-        return reservationService.release(reservationId, corrId);
+        return reservationService.release(reservationId, CallerContext.userId(jwt), corrId);
     }
 
     @PatchMapping("/{reservationId}/payment-method")
@@ -111,7 +118,7 @@ public class ReservationController {
             description = "Stores the Stripe paymentMethodId collected client-side via Stripe.js. "
                     + "Must be set before submit-payment; may be called again to correct it while still HELD.")
     @ApiResponse(responseCode = "200", description = "Payment method stored")
-    @ApiResponse(responseCode = "404", description = "Reservation not found",
+    @ApiResponse(responseCode = "404", description = "Reservation not found, or not owned by the caller",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "Reservation is no longer HELD",
@@ -119,8 +126,10 @@ public class ReservationController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     public ReservationResponse setPaymentMethod(
             @PathVariable UUID reservationId,
+            @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody SetPaymentMethodRequest request) {
-        return reservationService.setPaymentMethod(reservationId, request.paymentMethodId());
+        return reservationService.setPaymentMethod(
+                reservationId, CallerContext.userId(jwt), request.paymentMethodId());
     }
 
     @PostMapping("/{reservationId}/submit-payment")
@@ -129,24 +138,24 @@ public class ReservationController {
                     + "carrying the paymentMethodId set via PATCH .../payment-method and an amountCents "
                     + "computed server-side from catalog. Idempotent — calling again returns the existing saga.")
     @ApiResponse(responseCode = "202", description = "Payment flow initiated")
-    @ApiResponse(responseCode = "404", description = "Reservation not found",
+    @ApiResponse(responseCode = "404", description = "Reservation not found, or not owned by the caller",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "422", description = "No payment method set for this reservation",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    public ResponseEntity<Void> submitPayment(@PathVariable UUID reservationId) {
-        sagaOrchestrator.startSaga(reservationId);
+    public ResponseEntity<Void> submitPayment(@PathVariable UUID reservationId, @AuthenticationPrincipal Jwt jwt) {
+        sagaOrchestrator.startSaga(reservationId, CallerContext.userId(jwt));
         return ResponseEntity.accepted().build();
     }
 
     @GetMapping("/{reservationId}")
     @Operation(summary = "Get reservation by id")
     @ApiResponse(responseCode = "200", description = "Reservation found")
-    @ApiResponse(responseCode = "404", description = "No reservation with that id",
+    @ApiResponse(responseCode = "404", description = "No reservation with that id, or not owned by the caller",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    public ReservationResponse getReservation(@PathVariable UUID reservationId) {
-        return reservationService.get(reservationId);
+    public ReservationResponse getReservation(@PathVariable UUID reservationId, @AuthenticationPrincipal Jwt jwt) {
+        return reservationService.get(reservationId, CallerContext.userId(jwt));
     }
 }

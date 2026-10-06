@@ -9,6 +9,5 @@ import jakarta.validation.constraints.NotNull;
 
 public record CreateReservationRequest(
         @NotNull UUID showId,
-        @NotNull UUID userId,
         @NotEmpty @Schema(description = "Seat IDs to reserve") List<UUID> seatIds) {
 }
