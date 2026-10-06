@@ -21,7 +21,7 @@ import jakarta.servlet.http.HttpServletResponse;
 public class CorrelationIdFilter implements Filter {
 
     private static final String HEADER = "X-Correlation-Id";
-    private static final String MDC_KEY = "correlationId";
+    private static final String MDC_KEY = CorrelationIds.MDC_KEY;
 
     @Override
     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)

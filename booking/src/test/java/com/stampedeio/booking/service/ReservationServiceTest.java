@@ -34,6 +34,7 @@ import com.stampedeio.booking.exception.ResourceNotFoundException;
 import com.stampedeio.booking.exception.UnprocessableEntityException;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationEventRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
@@ -69,7 +70,7 @@ class ReservationServiceTest {
         service = new ReservationService(
                 reservationRepository, reservationSeatRepository, reservationEventRepository,
                 outboxRepository, catalogClient, holdMirrorService, transactionTemplate,
-                Clock.systemUTC());
+                Clock.systemUTC(), new ObjectMapper());
     }
 
     @Nested

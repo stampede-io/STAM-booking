@@ -1,5 +1,8 @@
 package com.stampedeio.booking.saga;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -7,6 +10,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stampedeio.booking.config.CorrelationIds;
 import com.stampedeio.booking.domain.OutboxMessage;
 import com.stampedeio.booking.domain.Reservation;
 import com.stampedeio.booking.domain.ReservationStateMachine;
@@ -34,17 +40,20 @@ public class BookingSagaOrchestrator {
     private final OutboxRepository outboxRepository;
     private final ReservationService reservationService;
     private final HoldMirrorService holdMirrorService;
+    private final ObjectMapper objectMapper;
 
     public BookingSagaOrchestrator(SagaInstanceRepository sagaInstanceRepository,
                                    ReservationRepository reservationRepository,
                                    OutboxRepository outboxRepository,
                                    ReservationService reservationService,
-                                   HoldMirrorService holdMirrorService) {
+                                   HoldMirrorService holdMirrorService,
+                                   ObjectMapper objectMapper) {
         this.sagaInstanceRepository = sagaInstanceRepository;
         this.reservationRepository = reservationRepository;
         this.outboxRepository = outboxRepository;
         this.reservationService = reservationService;
         this.holdMirrorService = holdMirrorService;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -60,7 +69,10 @@ public class BookingSagaOrchestrator {
         // Idempotent: if saga already exists for this reservation, return it
         return sagaInstanceRepository.findByReservationId(reservationId)
                 .orElseGet(() -> {
-                    UUID correlationId = UUID.randomUUID();
+                    // STAM-443: the gateway forwards the caller's correlation ID into MDC.
+                    // Compensation/recovery paths below run from a Kafka consumer or scheduler
+                    // with no request in flight, so they correctly mint their own.
+                    UUID correlationId = CorrelationIds.currentOrNew();
                     SagaInstance saga = new SagaInstance(SAGA_TYPE, reservation);
                     saga.advance(SagaState.PAYMENT_REQUESTED, "EMIT_AUTHORIZE_PAYMENT");
 
@@ -234,13 +246,19 @@ public class BookingSagaOrchestrator {
     }
 
     private String buildPayload(Reservation reservation, UUID correlationId) {
-        String seatIds = reservation.getSeats().stream()
-                .map(s -> "\"" + s.getSeatId() + "\"")
-                .collect(java.util.stream.Collectors.joining(","));
-        return "{\"reservationId\":\"" + reservation.getId()
-                + "\",\"showId\":\"" + reservation.getShowId()
-                + "\",\"seatIds\":[" + seatIds + "]"
-                + ",\"status\":\"" + reservation.getStatus()
-                + "\",\"correlationId\":\"" + correlationId + "\"}";
+        List<String> seatIds = reservation.getSeats().stream()
+                .map(s -> s.getSeatId().toString())
+                .toList();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.getId());
+        payload.put("showId", reservation.getShowId());
+        payload.put("seatIds", seatIds);
+        payload.put("status", reservation.getStatus());
+        payload.put("correlationId", correlationId);
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize saga payload for reservation " + reservation.getId(), e);
+        }
     }
 }

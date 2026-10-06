@@ -14,13 +14,17 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.MDC;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.stampedeio.booking.api.CreateReservationRequest;
 import com.stampedeio.booking.catalog.CatalogClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stampedeio.booking.domain.OutboxMessage;
 import com.stampedeio.booking.domain.Reservation;
 import com.stampedeio.booking.domain.ReservationStatus;
@@ -42,10 +46,17 @@ class OutboxWriteTest {
     private ReservationService service;
 
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-19T10:00:00Z"), ZoneOffset.UTC);
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @AfterEach
+    void clearMdc() {
+        MDC.clear();
+    }
 
     @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
+        MDC.clear();
         reservationRepository = mock(ReservationRepository.class);
         ReservationSeatRepository reservationSeatRepository = mock(ReservationSeatRepository.class);
         reservationEventRepository = mock(ReservationEventRepository.class);
@@ -65,7 +76,8 @@ class OutboxWriteTest {
 
         service = new ReservationService(
                 reservationRepository, reservationSeatRepository, reservationEventRepository,
-                outboxRepository, catalogClient, holdMirrorService, transactionTemplate, clock);
+                outboxRepository, catalogClient, holdMirrorService, transactionTemplate, clock,
+                new ObjectMapper());
     }
 
     @Test
@@ -125,6 +137,73 @@ class OutboxWriteTest {
         OutboxMessage msg = captor.getValue();
         assertThat(msg.getEventType()).isEqualTo("SeatsReleased");
         assertThat(msg.getPayload()).contains("\"status\":\"RELEASED\"");
+    }
+
+    @Test
+    @DisplayName("STAM-444: hold() carries the gateway's correlation ID onto the outbox row")
+    void hold_outboxCorrelationId_matchesGatewaySuppliedId() {
+        String gatewayCorrelationId = UUID.randomUUID().toString();
+        MDC.put("correlationId", gatewayCorrelationId);
+
+        UUID key = UUID.randomUUID();
+        UUID showId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID seatId = UUID.randomUUID();
+        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+
+        when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
+        when(reservationRepository.saveAndFlush(any(Reservation.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        service.hold(key, req);
+
+        ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
+        verify(outboxRepository).save(captor.capture());
+        assertThat(captor.getValue().getCorrelationId()).isEqualTo(UUID.fromString(gatewayCorrelationId));
+    }
+
+    @Test
+    @DisplayName("STAM-444: hold() without an inbound correlation ID still mints one, doesn't fail")
+    void hold_withoutCorrelationId_mintsOne() {
+        UUID key = UUID.randomUUID();
+        UUID showId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        UUID seatId = UUID.randomUUID();
+        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+
+        when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
+        when(reservationRepository.saveAndFlush(any(Reservation.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        service.hold(key, req);
+
+        ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
+        verify(outboxRepository).save(captor.capture());
+        assertThat(captor.getValue().getCorrelationId()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("STAM-444: a correlation ID containing a quote and backslash doesn't corrupt the outbox payload")
+    void confirm_hostileCorrelationId_producesValidJsonWithFieldsUnchanged() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        Reservation reservation = buildHeldReservation(reservationId);
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(reservationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        String hostileId = "trace\"};{\\injected";
+
+        service.confirm(reservationId, "PAY-123", hostileId);
+
+        ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
+        verify(outboxRepository).save(captor.capture());
+        String payload = captor.getValue().getPayload();
+
+        JsonNode node = objectMapper.readTree(payload); // throws if the JSON is malformed
+        assertThat(node.get("status").asText()).isEqualTo("CONFIRMED");
+        assertThat(node.get("reservationId").asText()).isEqualTo(reservationId.toString());
+        assertThat(node.get("correlationId").asText()).isEqualTo(hostileId);
+        // not a valid UUID, so the typed column correctly stores null rather than guessing
+        assertThat(captor.getValue().getCorrelationId()).isNull();
     }
 
     private Reservation buildHeldReservation(UUID id) {
