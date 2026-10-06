@@ -287,4 +287,50 @@ class ReservationServiceTest {
                     .isInstanceOf(ResourceNotFoundException.class);
         }
     }
+
+    @Nested
+    @DisplayName("setPaymentMethod()")
+    class SetPaymentMethodTests {
+
+        @Test
+        @DisplayName("STAM-442: stores paymentMethodId on a HELD reservation")
+        void setPaymentMethod_heldReservation_succeeds() {
+            UUID reservationId = UUID.randomUUID();
+            Reservation reservation = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+            reservation.addSeat(UUID.randomUUID());
+
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+            when(reservationRepository.save(any(Reservation.class)))
+                    .thenAnswer(inv -> inv.getArgument(0));
+
+            service.setPaymentMethod(reservationId, "pm_card_visa");
+
+            assertThat(reservation.getPaymentMethodId()).isEqualTo("pm_card_visa");
+            verify(reservationRepository).save(reservation);
+        }
+
+        @Test
+        @DisplayName("STAM-442: setting payment method on a non-HELD reservation throws 409")
+        void setPaymentMethod_nonHeldReservation_throwsConflict() {
+            UUID reservationId = UUID.randomUUID();
+            Reservation reservation = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+            reservation.setStatus(com.stampedeio.booking.domain.ReservationStatus.CONFIRMED);
+
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+
+            assertThatThrownBy(() -> service.setPaymentMethod(reservationId, "pm_card_visa"))
+                    .isInstanceOf(ConflictException.class);
+            verify(reservationRepository, org.mockito.Mockito.never()).save(any());
+        }
+
+        @Test
+        @DisplayName("setPaymentMethod on non-existent reservation throws 404")
+        void setPaymentMethod_notFound_throws404() {
+            UUID reservationId = UUID.randomUUID();
+            when(reservationRepository.findById(reservationId)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.setPaymentMethod(reservationId, "pm_card_visa"))
+                    .isInstanceOf(ResourceNotFoundException.class);
+        }
+    }
 }
