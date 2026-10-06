@@ -101,6 +101,8 @@ class LateAuthAfterExpiryIT {
 
         outboxPublisher.poll();
 
+        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+
         // Start saga
         sagaOrchestrator.startSaga(reservationId);
 
@@ -136,6 +138,8 @@ class LateAuthAfterExpiryIT {
         UUID reservationId2 = holdResult2.response().reservationId();
 
         outboxPublisher.poll();
+
+        reservationService.setPaymentMethod(reservationId2, "pm_card_visa");
 
         // Start saga — in PAYMENT_REQUESTED
         sagaOrchestrator.startSaga(reservationId2);
@@ -233,7 +237,16 @@ class LateAuthAfterExpiryIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }

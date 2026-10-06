@@ -101,6 +101,8 @@ class HoldExpireMidSagaIT {
 
         outboxPublisher.poll();
 
+        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+
         // Start saga — now in PAYMENT_REQUESTED
         sagaOrchestrator.startSaga(reservationId);
         SagaInstance midFlight = sagaInstanceRepository.findByReservationId(reservationId).orElseThrow();
@@ -171,7 +173,16 @@ class HoldExpireMidSagaIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }

@@ -16,9 +16,15 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.MDC;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.never;
+
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stampedeio.booking.catalog.CatalogClient;
 import com.stampedeio.booking.domain.OutboxMessage;
 import com.stampedeio.booking.domain.Reservation;
+import com.stampedeio.booking.exception.UnprocessableEntityException;
 import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.SagaInstanceRepository;
@@ -32,6 +38,7 @@ class BookingSagaOrchestratorTest {
     private ReservationRepository reservationRepository;
     private OutboxRepository outboxRepository;
     private BookingSagaOrchestrator orchestrator;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
@@ -41,10 +48,12 @@ class BookingSagaOrchestratorTest {
         outboxRepository = mock(OutboxRepository.class);
         ReservationService reservationService = mock(ReservationService.class);
         HoldMirrorService holdMirrorService = mock(HoldMirrorService.class);
+        CatalogClient catalogClient = mock(CatalogClient.class);
+        when(catalogClient.totalPriceCentsForSeats(any(), any())).thenReturn(5000L);
 
         orchestrator = new BookingSagaOrchestrator(
                 sagaInstanceRepository, reservationRepository, outboxRepository,
-                reservationService, holdMirrorService, new ObjectMapper());
+                reservationService, holdMirrorService, objectMapper, catalogClient);
     }
 
     @AfterEach
@@ -105,6 +114,36 @@ class BookingSagaOrchestratorTest {
         assertThat(captor.getValue().getCorrelationId()).isNotNull();
     }
 
+    @Test
+    @DisplayName("STAM-442: startSaga() rejects a reservation with no payment method set")
+    void startSaga_withoutPaymentMethod_throwsUnprocessableEntity() {
+        UUID reservationId = UUID.randomUUID();
+        Reservation reservation = buildHeldReservation(reservationId);
+        reservation.setPaymentMethodId(null);
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+
+        assertThrows(UnprocessableEntityException.class, () -> orchestrator.startSaga(reservationId));
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("STAM-442: AuthorizePayment payload carries paymentMethodId and a catalog-computed amountCents")
+    void startSaga_outboxPayload_containsPaymentMethodAndAmount() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        Reservation reservation = buildHeldReservation(reservationId);
+        when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
+        when(sagaInstanceRepository.findByReservationId(reservationId)).thenReturn(Optional.empty());
+        when(sagaInstanceRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        orchestrator.startSaga(reservationId);
+
+        ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
+        verify(outboxRepository).save(captor.capture());
+        JsonNode payload = objectMapper.readTree(captor.getValue().getPayload());
+        assertThat(payload.get("paymentMethodId").asText()).isEqualTo("pm_card_visa");
+        assertThat(payload.get("amountCents").asLong()).isEqualTo(5000L);
+    }
+
     private Reservation buildHeldReservation(UUID id) {
         Reservation r = new Reservation(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
         try {
@@ -115,6 +154,7 @@ class BookingSagaOrchestratorTest {
             throw new RuntimeException(e);
         }
         r.addSeat(UUID.randomUUID());
+        r.setPaymentMethodId("pm_card_visa");
         return r;
     }
 }

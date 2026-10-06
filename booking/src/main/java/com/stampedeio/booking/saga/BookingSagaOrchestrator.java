@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stampedeio.booking.catalog.CatalogClient;
 import com.stampedeio.booking.config.CorrelationIds;
 import com.stampedeio.booking.domain.OutboxMessage;
 import com.stampedeio.booking.domain.Reservation;
@@ -21,6 +22,7 @@ import com.stampedeio.booking.domain.SagaInstance;
 import com.stampedeio.booking.domain.SagaState;
 import com.stampedeio.booking.domain.SeatHoldStatus;
 import com.stampedeio.booking.exception.ResourceNotFoundException;
+import com.stampedeio.booking.exception.UnprocessableEntityException;
 import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.SagaInstanceRepository;
@@ -41,19 +43,22 @@ public class BookingSagaOrchestrator {
     private final ReservationService reservationService;
     private final HoldMirrorService holdMirrorService;
     private final ObjectMapper objectMapper;
+    private final CatalogClient catalogClient;
 
     public BookingSagaOrchestrator(SagaInstanceRepository sagaInstanceRepository,
                                    ReservationRepository reservationRepository,
                                    OutboxRepository outboxRepository,
                                    ReservationService reservationService,
                                    HoldMirrorService holdMirrorService,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   CatalogClient catalogClient) {
         this.sagaInstanceRepository = sagaInstanceRepository;
         this.reservationRepository = reservationRepository;
         this.outboxRepository = outboxRepository;
         this.reservationService = reservationService;
         this.holdMirrorService = holdMirrorService;
         this.objectMapper = objectMapper;
+        this.catalogClient = catalogClient;
     }
 
     @Transactional
@@ -66,6 +71,12 @@ public class BookingSagaOrchestrator {
                     "Cannot start saga for reservation in state " + reservation.getStatus());
         }
 
+        if (reservation.getPaymentMethodId() == null || reservation.getPaymentMethodId().isBlank()) {
+            throw new UnprocessableEntityException(
+                    "No payment method set for reservation " + reservationId
+                            + " — call PATCH .../payment-method first");
+        }
+
         // Idempotent: if saga already exists for this reservation, return it
         return sagaInstanceRepository.findByReservationId(reservationId)
                 .orElseGet(() -> {
@@ -76,7 +87,7 @@ public class BookingSagaOrchestrator {
                     SagaInstance saga = new SagaInstance(SAGA_TYPE, reservation);
                     saga.advance(SagaState.PAYMENT_REQUESTED, "EMIT_AUTHORIZE_PAYMENT");
 
-                    String commandPayload = buildPayload(reservation, correlationId);
+                    String commandPayload = buildAuthorizePaymentPayload(reservation, correlationId);
                     outboxRepository.save(new OutboxMessage(
                             "Reservation", reservation.getId(), "AuthorizePayment", commandPayload,
                             correlationId, TOPIC_PAYMENTS_COMMANDS));
@@ -212,7 +223,7 @@ public class BookingSagaOrchestrator {
 
         if (SagaState.PAYMENT_REQUESTED.name().equals(state)) {
             UUID correlationId = UUID.randomUUID();
-            String commandPayload = buildPayload(reservation, correlationId);
+            String commandPayload = buildAuthorizePaymentPayload(reservation, correlationId);
             outboxRepository.save(new OutboxMessage(
                     "Reservation", reservation.getId(), "AuthorizePayment", commandPayload,
                     correlationId, TOPIC_PAYMENTS_COMMANDS));
@@ -255,10 +266,37 @@ public class BookingSagaOrchestrator {
         payload.put("seatIds", seatIds);
         payload.put("status", reservation.getStatus());
         payload.put("correlationId", correlationId);
+        return writeJson(payload, reservation.getId());
+    }
+
+    /**
+     * STAM-442: the AuthorizePayment command additionally carries paymentMethodId
+     * (set via PATCH .../payment-method before submit-payment) and amountCents,
+     * computed server-side from catalog's seat prices rather than trusted from
+     * the client.
+     */
+    private String buildAuthorizePaymentPayload(Reservation reservation, UUID correlationId) {
+        List<UUID> seatIds = reservation.getSeats().stream()
+                .map(s -> s.getSeatId())
+                .toList();
+        long amountCents = catalogClient.totalPriceCentsForSeats(reservation.getShowId(), seatIds);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.getId());
+        payload.put("showId", reservation.getShowId());
+        payload.put("seatIds", seatIds.stream().map(UUID::toString).toList());
+        payload.put("status", reservation.getStatus());
+        payload.put("correlationId", correlationId);
+        payload.put("paymentMethodId", reservation.getPaymentMethodId());
+        payload.put("amountCents", amountCents);
+        return writeJson(payload, reservation.getId());
+    }
+
+    private String writeJson(Map<String, Object> payload, UUID reservationId) {
         try {
             return objectMapper.writeValueAsString(payload);
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialize saga payload for reservation " + reservation.getId(), e);
+            throw new IllegalStateException("Failed to serialize saga payload for reservation " + reservationId, e);
         }
     }
 }
