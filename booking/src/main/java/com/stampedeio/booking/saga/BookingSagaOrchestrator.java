@@ -256,6 +256,49 @@ public class BookingSagaOrchestrator {
         log.info("Recovery: compensated saga={} reservation={}", saga.getId(), reservation.getId());
     }
 
+    /**
+     * STAM-446: the whole expiry of one reservation — status, seats, event,
+     * outbox, saga compensation — as a single transaction on a proxied bean,
+     * called per-reservation from HoldExpiryScheduler. The re-check against a
+     * freshly loaded status (rather than the caller's query snapshot) means a
+     * losing concurrent sweep — same instance or, eventually, another replica —
+     * finds the reservation already EXPIRED and returns without writing
+     * anything. Any residual race that still reaches the unique constraint on
+     * reservation_events is left for the caller to catch; it must never be
+     * fatal here.
+     */
+    @Transactional
+    public void expireHeldReservation(UUID reservationId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        if (reservation.getStatus() != ReservationStatus.HELD) {
+            log.info("Reservation={} no longer HELD (status={}), skipping — "
+                    + "already handled by a concurrent sweep", reservationId, reservation.getStatus());
+            return;
+        }
+
+        ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.EXPIRED);
+        reservation.setStatus(ReservationStatus.EXPIRED);
+        reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.RELEASED));
+        holdMirrorService.remove(reservation.getId());
+
+        String correlationId = UUID.randomUUID().toString();
+        reservationService.appendEvent(reservation, "RESERVATION_EXPIRED", correlationId, null);
+        reservationService.appendOutbox(reservation, "HoldExpired", correlationId);
+        reservationRepository.save(reservation);
+
+        sagaInstanceRepository.findByReservationId(reservation.getId()).ifPresent(saga -> {
+            if (!SagaState.COMPENSATED.name().equals(saga.getState())
+                    && !SagaState.COMPLETED.name().equals(saga.getState())) {
+                saga.advance(SagaState.COMPENSATING, "HOLD_EXPIRED");
+                saga.advance(SagaState.COMPENSATED, "HOLD_EXPIRED_SEATS_FREED");
+                sagaInstanceRepository.save(saga);
+                log.info("Saga compensated via hold expiry for reservation={}", reservationId);
+            }
+        });
+    }
+
     private String buildPayload(Reservation reservation, UUID correlationId) {
         List<String> seatIds = reservation.getSeats().stream()
                 .map(s -> s.getSeatId().toString())
