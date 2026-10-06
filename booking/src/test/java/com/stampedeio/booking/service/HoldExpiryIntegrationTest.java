@@ -3,8 +3,14 @@ package com.stampedeio.booking.service;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import javax.sql.DataSource;
 
@@ -119,7 +125,7 @@ class HoldExpiryIntegrationTest {
     }
 
     @Test
-    @DisplayName("AC3: stranded holds from downtime are swept on startup")
+    @DisplayName("AC3: stranded holds from downtime are swept at startup (the scheduled sweep's first run)")
     void startupSweep_processesStrandedHolds() {
         UUID showId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
@@ -131,11 +137,65 @@ class HoldExpiryIntegrationTest {
         jdbc.update("UPDATE reservations SET expires_at = now() - INTERVAL '10 minutes' WHERE id = ?",
                 saved.getId());
 
-        // onStartup delegates to expireStaleHolds — same logic as the scheduled sweep
         holdExpiryScheduler.expireStaleHolds();
 
         Reservation expired = reservationRepository.findById(saved.getId()).orElseThrow();
         assertThat(expired.getStatus().name()).isEqualTo("EXPIRED");
+    }
+
+    @Test
+    @DisplayName("STAM-446: two overlapping sweeps on the same stale hold never throw, "
+            + "and only one RESERVATION_EXPIRED event / HoldExpired outbox row is written")
+    void overlappingSweeps_raceOnSameHold_doesNotThrow_writesExactlyOnce() throws Exception {
+        UUID showId = UUID.randomUUID();
+        UUID seatId = UUID.randomUUID();
+        Reservation reservation = new Reservation(showId, UUID.randomUUID(), UUID.randomUUID());
+        reservation.addSeat(seatId);
+        Reservation saved = reservationRepository.saveAndFlush(reservation);
+
+        jdbc.update("UPDATE reservations SET expires_at = now() - INTERVAL '1 minute' WHERE id = ?",
+                saved.getId());
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch go = new CountDownLatch(1);
+            List<Future<Exception>> results = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                results.add(pool.submit(() -> {
+                    ready.countDown();
+                    go.await();
+                    try {
+                        holdExpiryScheduler.expireStaleHolds();
+                        return null;
+                    } catch (Exception e) {
+                        return e;
+                    }
+                }));
+            }
+            ready.await();
+            go.countDown();
+            for (Future<Exception> result : results) {
+                assertThat(result.get(10, TimeUnit.SECONDS))
+                        .as("a losing sweep must be caught internally, never thrown to the caller")
+                        .isNull();
+            }
+        } finally {
+            pool.shutdown();
+        }
+
+        Reservation expired = reservationRepository.findById(saved.getId()).orElseThrow();
+        assertThat(expired.getStatus().name()).isEqualTo("EXPIRED");
+
+        Integer eventCount = jdbc.queryForObject(
+                "SELECT count(*) FROM reservation_events WHERE aggregate_id = ? AND event_type = 'RESERVATION_EXPIRED'",
+                Integer.class, saved.getId());
+        assertThat(eventCount).isEqualTo(1);
+
+        Integer outboxCount = jdbc.queryForObject(
+                "SELECT count(*) FROM outbox WHERE aggregate_id = ? AND event_type = 'HoldExpired'",
+                Integer.class, saved.getId());
+        assertThat(outboxCount).isEqualTo(1);
     }
 
     @Test
