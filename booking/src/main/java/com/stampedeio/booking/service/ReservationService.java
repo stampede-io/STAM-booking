@@ -153,6 +153,20 @@ public class ReservationService {
         return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
     }
 
+    @Transactional
+    public ReservationResponse setPaymentMethod(UUID reservationId, String paymentMethodId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        if (reservation.getStatus() != ReservationStatus.HELD) {
+            throw new ConflictException(
+                    "Cannot set payment method for reservation in state " + reservation.getStatus());
+        }
+
+        reservation.setPaymentMethodId(paymentMethodId);
+        return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
+    }
+
     @Transactional(readOnly = true)
     public ReservationResponse get(UUID reservationId) {
         Reservation reservation = reservationRepository.findById(reservationId)

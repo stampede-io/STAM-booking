@@ -14,4 +14,7 @@ public interface CatalogFeignClient {
     @GetMapping("/api/v1/shows/{showId}/seats/validate")
     void validateSeats(@PathVariable("showId") UUID showId,
                        @RequestParam("ids") List<UUID> seatIds);
+
+    @GetMapping("/api/v1/shows/{showId}/seats")
+    List<SeatPrice> listSeats(@PathVariable("showId") UUID showId);
 }

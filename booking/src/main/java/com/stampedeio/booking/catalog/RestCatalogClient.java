@@ -39,4 +39,23 @@ public class RestCatalogClient implements CatalogClient {
         throw new ServiceUnavailableException(
                 "Seat validation unavailable — retry shortly");
     }
+
+    @Override
+    @CircuitBreaker(name = "catalogClient", fallbackMethod = "totalPriceFallback")
+    public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+        List<SeatPrice> seats = feignClient.listSeats(showId);
+        List<SeatPrice> matched = seats.stream()
+                .filter(s -> seatIds.contains(s.id()))
+                .toList();
+        if (matched.size() != seatIds.size()) {
+            throw new UnprocessableEntityException(
+                    "One or more seat IDs are no longer present in catalog for show " + showId);
+        }
+        return matched.stream().mapToLong(SeatPrice::priceCents).sum();
+    }
+
+    @SuppressWarnings("unused")
+    public long totalPriceFallback(UUID showId, List<UUID> seatIds, Exception ex) {
+        throw new ServiceUnavailableException("Seat pricing unavailable — retry shortly");
+    }
 }

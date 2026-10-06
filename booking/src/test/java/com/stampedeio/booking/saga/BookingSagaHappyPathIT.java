@@ -99,6 +99,8 @@ class BookingSagaHappyPathIT {
         // AC1 step 1: SeatsHeld written to outbox, publish it
         outboxPublisher.poll();
 
+        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+
         // Step 2: Start saga — emits AuthorizePayment command to payments.commands
         SagaInstance saga = sagaOrchestrator.startSaga(reservationId);
 
@@ -177,6 +179,8 @@ class BookingSagaHappyPathIT {
         // Before saga starts — no saga row
         assertThat(sagaInstanceRepository.findByReservationId(reservationId)).isEmpty();
 
+        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+
         // Start saga
         sagaOrchestrator.startSaga(reservationId);
 
@@ -197,6 +201,8 @@ class BookingSagaHappyPathIT {
         ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
                 new CreateReservationRequest(showId, userId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
+
+        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
 
         SagaInstance first = sagaOrchestrator.startSaga(reservationId);
         SagaInstance second = sagaOrchestrator.startSaga(reservationId);
@@ -243,7 +249,16 @@ class BookingSagaHappyPathIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }

@@ -106,12 +106,33 @@ public class ReservationController {
         return reservationService.release(reservationId, corrId);
     }
 
+    @PatchMapping("/{reservationId}/payment-method")
+    @Operation(summary = "Set the payment method for a held reservation",
+            description = "Stores the Stripe paymentMethodId collected client-side via Stripe.js. "
+                    + "Must be set before submit-payment; may be called again to correct it while still HELD.")
+    @ApiResponse(responseCode = "200", description = "Payment method stored")
+    @ApiResponse(responseCode = "404", description = "Reservation not found",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Reservation is no longer HELD",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ReservationResponse setPaymentMethod(
+            @PathVariable UUID reservationId,
+            @Valid @RequestBody SetPaymentMethodRequest request) {
+        return reservationService.setPaymentMethod(reservationId, request.paymentMethodId());
+    }
+
     @PostMapping("/{reservationId}/submit-payment")
     @Operation(summary = "Submit payment for a held reservation",
-            description = "Starts the booking saga: emits AuthorizePayment command to the payment service. "
-                    + "Idempotent — calling again returns the existing saga.")
+            description = "Starts the booking saga: emits AuthorizePayment command to the payment service, "
+                    + "carrying the paymentMethodId set via PATCH .../payment-method and an amountCents "
+                    + "computed server-side from catalog. Idempotent — calling again returns the existing saga.")
     @ApiResponse(responseCode = "202", description = "Payment flow initiated")
     @ApiResponse(responseCode = "404", description = "Reservation not found",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "422", description = "No payment method set for this reservation",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<Void> submitPayment(@PathVariable UUID reservationId) {

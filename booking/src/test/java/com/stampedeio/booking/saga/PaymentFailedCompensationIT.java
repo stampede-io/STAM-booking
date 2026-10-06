@@ -95,6 +95,8 @@ class PaymentFailedCompensationIT {
 
         outboxPublisher.poll();
 
+        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+
         SagaInstance saga = sagaOrchestrator.startSaga(reservationId);
         assertThat(saga.getState()).isEqualTo(SagaState.PAYMENT_REQUESTED.name());
 
@@ -176,7 +178,16 @@ class PaymentFailedCompensationIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }

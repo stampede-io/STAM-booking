@@ -79,6 +79,8 @@ class SagaRecoveryIT {
 
             outboxPublisher.poll();
 
+            reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+
             orchestrator.startSaga(reservationId);
             SagaInstance midFlight = sagaRepo.findByReservationId(reservationId).orElseThrow();
             assertThat(midFlight.getState()).isEqualTo(SagaState.PAYMENT_REQUESTED.name());
@@ -159,6 +161,8 @@ class SagaRecoveryIT {
             ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
                     new CreateReservationRequest(showId, userId, List.of(seatId)));
             UUID reservationId = holdResult.response().reservationId();
+
+            reservationService.setPaymentMethod(reservationId, "pm_card_visa");
 
             orchestrator.startSaga(reservationId);
 
@@ -257,7 +261,16 @@ class SagaRecoveryIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }
