@@ -80,15 +80,16 @@ public class ReservationService {
         return CorrelationIds.currentOrNew().toString();
     }
 
-    public HoldResult hold(UUID idempotencyKey, CreateReservationRequest request) {
+    public HoldResult hold(UUID idempotencyKey, UUID callerUserId, CreateReservationRequest request) {
         Optional<Reservation> existing = reservationRepository.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
+            checkOwnership(existing.get(), callerUserId);
             return new HoldResult(ReservationResponse.from(existing.get(), Instant.now(clock)), true);
         }
 
         catalogClient.validateSeatsForShow(request.showId(), request.seatIds());
 
-        Reservation reservation = new Reservation(request.showId(), request.userId(), idempotencyKey);
+        Reservation reservation = new Reservation(request.showId(), callerUserId, idempotencyKey);
         request.seatIds().forEach(reservation::addSeat);
 
         String correlationId = currentCorrelationId();
@@ -118,9 +119,11 @@ public class ReservationService {
     }
 
     @Transactional
-    public ReservationResponse confirm(UUID reservationId, String paymentReference, String correlationId) {
+    public ReservationResponse confirm(UUID reservationId, UUID callerUserId, String paymentReference,
+                                       String correlationId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
 
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.CONFIRMED);
         reservation.setStatus(ReservationStatus.CONFIRMED);
@@ -136,9 +139,10 @@ public class ReservationService {
     }
 
     @Transactional
-    public ReservationResponse release(UUID reservationId, String correlationId) {
+    public ReservationResponse release(UUID reservationId, UUID callerUserId, String correlationId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
 
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.RELEASED);
         reservation.setStatus(ReservationStatus.RELEASED);
@@ -154,9 +158,10 @@ public class ReservationService {
     }
 
     @Transactional
-    public ReservationResponse setPaymentMethod(UUID reservationId, String paymentMethodId) {
+    public ReservationResponse setPaymentMethod(UUID reservationId, UUID callerUserId, String paymentMethodId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
 
         if (reservation.getStatus() != ReservationStatus.HELD) {
             throw new ConflictException(
@@ -168,10 +173,22 @@ public class ReservationService {
     }
 
     @Transactional(readOnly = true)
-    public ReservationResponse get(UUID reservationId) {
+    public ReservationResponse get(UUID reservationId, UUID callerUserId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
         return ReservationResponse.from(reservation, Instant.now(clock));
+    }
+
+    /**
+     * STAM-447: 404, not 403 — a caller who doesn't own the reservation gets
+     * the same response as one that doesn't exist, so the ID itself never
+     * confirms ownership either way.
+     */
+    private static void checkOwnership(Reservation reservation, UUID callerUserId) {
+        if (!reservation.getUserId().equals(callerUserId)) {
+            throw new ResourceNotFoundException("Reservation", reservation.getId());
+        }
     }
 
     public void appendOutbox(Reservation reservation, String eventType, String correlationId) {

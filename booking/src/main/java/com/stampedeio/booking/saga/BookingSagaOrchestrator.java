@@ -62,9 +62,14 @@ public class BookingSagaOrchestrator {
     }
 
     @Transactional
-    public SagaInstance startSaga(UUID reservationId) {
+    public SagaInstance startSaga(UUID reservationId, UUID callerUserId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        // STAM-447: 404, not 403 — matches ReservationService's ownership check.
+        if (!reservation.getUserId().equals(callerUserId)) {
+            throw new ResourceNotFoundException("Reservation", reservationId);
+        }
 
         if (reservation.getStatus() != ReservationStatus.HELD) {
             throw new IllegalStateException(

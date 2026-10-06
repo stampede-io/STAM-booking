@@ -87,13 +87,13 @@ class OutboxWriteTest {
         UUID showId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+        CreateReservationRequest req = new CreateReservationRequest(showId, List.of(seatId));
 
         when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
         when(reservationRepository.saveAndFlush(any(Reservation.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
 
-        service.hold(key, req);
+        service.hold(key, userId, req);
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -112,7 +112,7 @@ class OutboxWriteTest {
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(reservationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        service.confirm(reservationId, "PAY-123", "corr-1");
+        service.confirm(reservationId, reservation.getUserId(), "PAY-123", "corr-1");
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -130,7 +130,7 @@ class OutboxWriteTest {
         when(reservationRepository.findById(reservationId)).thenReturn(Optional.of(reservation));
         when(reservationRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        service.release(reservationId, "corr-2");
+        service.release(reservationId, reservation.getUserId(), "corr-2");
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -149,13 +149,13 @@ class OutboxWriteTest {
         UUID showId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+        CreateReservationRequest req = new CreateReservationRequest(showId, List.of(seatId));
 
         when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
         when(reservationRepository.saveAndFlush(any(Reservation.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
 
-        service.hold(key, req);
+        service.hold(key, userId, req);
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -169,13 +169,13 @@ class OutboxWriteTest {
         UUID showId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
-        CreateReservationRequest req = new CreateReservationRequest(showId, userId, List.of(seatId));
+        CreateReservationRequest req = new CreateReservationRequest(showId, List.of(seatId));
 
         when(reservationRepository.findByIdempotencyKey(key)).thenReturn(Optional.empty());
         when(reservationRepository.saveAndFlush(any(Reservation.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
 
-        service.hold(key, req);
+        service.hold(key, userId, req);
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());
@@ -192,7 +192,7 @@ class OutboxWriteTest {
 
         String hostileId = "trace\"};{\\injected";
 
-        service.confirm(reservationId, "PAY-123", hostileId);
+        service.confirm(reservationId, reservation.getUserId(), "PAY-123", hostileId);
 
         ArgumentCaptor<OutboxMessage> captor = ArgumentCaptor.forClass(OutboxMessage.class);
         verify(outboxRepository).save(captor.capture());

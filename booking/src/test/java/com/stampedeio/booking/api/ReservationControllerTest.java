@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -25,8 +26,10 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stampedeio.booking.config.SecurityConfig;
 import com.stampedeio.booking.saga.BookingSagaOrchestrator;
 import com.stampedeio.booking.exception.ConflictException;
 import com.stampedeio.booking.exception.GlobalExceptionHandler;
@@ -38,7 +41,7 @@ import com.stampedeio.booking.service.ReservationService;
 import com.stampedeio.booking.service.ReservationService.HoldResult;
 
 @WebMvcTest(ReservationController.class)
-@Import(GlobalExceptionHandler.class)
+@Import({GlobalExceptionHandler.class, SecurityConfig.class})
 class ReservationControllerTest {
 
     @Autowired
@@ -51,6 +54,11 @@ class ReservationControllerTest {
 
     @MockitoBean
     private BookingSagaOrchestrator sagaOrchestrator;
+
+    /** STAM-447: every endpoint requires an authenticated caller now. */
+    private static RequestPostProcessor authAs(UUID userId) {
+        return jwt().jwt(builder -> builder.claim("user_id", userId.toString()));
+    }
 
     @Nested
     @DisplayName("POST /api/v1/reservations (hold)")
@@ -70,12 +78,13 @@ class ReservationControllerTest {
                     reservationId, showId, userId, "HELD",
                     List.of(seatId), expiresAt, 420);
 
-            when(reservationService.hold(eq(key), any())).thenReturn(new HoldResult(resp, false));
+            when(reservationService.hold(eq(key), eq(userId), any())).thenReturn(new HoldResult(resp, false));
 
             var body = objectMapper.writeValueAsString(
-                    new CreateReservationRequest(showId, userId, List.of(seatId)));
+                    new CreateReservationRequest(showId, List.of(seatId)));
 
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(userId))
                             .header("Idempotency-Key", key.toString())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -98,12 +107,13 @@ class ReservationControllerTest {
                     UUID.randomUUID(), showId, userId, "HELD",
                     List.of(seatId), Instant.parse("2026-07-17T10:07:00Z"), 200);
 
-            when(reservationService.hold(eq(key), any())).thenReturn(new HoldResult(resp, true));
+            when(reservationService.hold(eq(key), eq(userId), any())).thenReturn(new HoldResult(resp, true));
 
             var body = objectMapper.writeValueAsString(
-                    new CreateReservationRequest(showId, userId, List.of(seatId)));
+                    new CreateReservationRequest(showId, List.of(seatId)));
 
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(userId))
                             .header("Idempotency-Key", key.toString())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -116,15 +126,17 @@ class ReservationControllerTest {
         void post_conflict_returns409() throws Exception {
             UUID key = UUID.randomUUID();
             UUID showId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
             UUID seatId = UUID.randomUUID();
 
-            when(reservationService.hold(eq(key), any()))
+            when(reservationService.hold(eq(key), eq(userId), any()))
                     .thenThrow(new ConflictException("Seat " + seatId + " is already held"));
 
             var body = objectMapper.writeValueAsString(
-                    new CreateReservationRequest(showId, UUID.randomUUID(), List.of(seatId)));
+                    new CreateReservationRequest(showId, List.of(seatId)));
 
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(userId))
                             .header("Idempotency-Key", key.toString())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -140,16 +152,18 @@ class ReservationControllerTest {
         void post_invalidSeats_returns422() throws Exception {
             UUID key = UUID.randomUUID();
             UUID showId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
             UUID seatId = UUID.randomUUID();
 
-            when(reservationService.hold(eq(key), any()))
+            when(reservationService.hold(eq(key), eq(userId), any()))
                     .thenThrow(new UnprocessableEntityException(
                             "One or more seat IDs are invalid or do not belong to show " + showId));
 
             var body = objectMapper.writeValueAsString(
-                    new CreateReservationRequest(showId, UUID.randomUUID(), List.of(seatId)));
+                    new CreateReservationRequest(showId, List.of(seatId)));
 
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(userId))
                             .header("Idempotency-Key", key.toString())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -164,6 +178,7 @@ class ReservationControllerTest {
         @DisplayName("400 problem+json when required body fields missing")
         void post_missingFields_returns400() throws Exception {
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(UUID.randomUUID()))
                             .header("Idempotency-Key", UUID.randomUUID().toString())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{}"))
@@ -176,9 +191,10 @@ class ReservationControllerTest {
         @DisplayName("400 when Idempotency-Key header is missing")
         void post_missingHeader_returns400() throws Exception {
             var body = objectMapper.writeValueAsString(new CreateReservationRequest(
-                    UUID.randomUUID(), UUID.randomUUID(), List.of(UUID.randomUUID())));
+                    UUID.randomUUID(), List.of(UUID.randomUUID())));
 
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(UUID.randomUUID()))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
                     .andExpect(status().isBadRequest());
@@ -192,15 +208,16 @@ class ReservationControllerTest {
             UUID userId = UUID.randomUUID();
             UUID seatId = UUID.randomUUID();
 
-            when(reservationService.hold(eq(key), any())).thenReturn(new HoldResult(
+            when(reservationService.hold(eq(key), eq(userId), any())).thenReturn(new HoldResult(
                     new ReservationResponse(UUID.randomUUID(), showId, userId, "HELD",
                             List.of(seatId), Instant.now(), 420),
                     false));
 
             var body = objectMapper.writeValueAsString(
-                    new CreateReservationRequest(showId, userId, List.of(seatId)));
+                    new CreateReservationRequest(showId, List.of(seatId)));
 
             mvc.perform(post("/api/v1/reservations")
+                            .with(authAs(userId))
                             .header("Idempotency-Key", key.toString())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body))
@@ -225,10 +242,11 @@ class ReservationControllerTest {
                     reservationId, showId, userId, "CONFIRMED",
                     List.of(seatId), Instant.parse("2026-07-17T10:07:00Z"), 0);
 
-            when(reservationService.confirm(eq(reservationId), eq("PAY-123"), anyString()))
+            when(reservationService.confirm(eq(reservationId), eq(userId), eq("PAY-123"), anyString()))
                     .thenReturn(resp);
 
             mvc.perform(patch("/api/v1/reservations/{id}/confirm", reservationId)
+                            .with(authAs(userId))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"paymentReference\":\"PAY-123\"}"))
                     .andExpect(status().isOk())
@@ -240,12 +258,14 @@ class ReservationControllerTest {
         @DisplayName("AC4: confirm already-CONFIRMED reservation returns 409 problem+json")
         void confirm_alreadyConfirmed_returns409() throws Exception {
             UUID reservationId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
 
-            when(reservationService.confirm(eq(reservationId), anyString(), anyString()))
+            when(reservationService.confirm(eq(reservationId), eq(userId), anyString(), anyString()))
                     .thenThrow(new IllegalStateTransitionException(
                             ReservationStatus.CONFIRMED, ReservationStatus.CONFIRMED));
 
             mvc.perform(patch("/api/v1/reservations/{id}/confirm", reservationId)
+                            .with(authAs(userId))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"paymentReference\":\"PAY-456\"}"))
                     .andExpect(status().isConflict())
@@ -260,12 +280,14 @@ class ReservationControllerTest {
         @DisplayName("AC4: confirm RELEASED reservation returns 409")
         void confirm_released_returns409() throws Exception {
             UUID reservationId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
 
-            when(reservationService.confirm(eq(reservationId), anyString(), anyString()))
+            when(reservationService.confirm(eq(reservationId), eq(userId), anyString(), anyString()))
                     .thenThrow(new IllegalStateTransitionException(
                             ReservationStatus.RELEASED, ReservationStatus.CONFIRMED));
 
             mvc.perform(patch("/api/v1/reservations/{id}/confirm", reservationId)
+                            .with(authAs(userId))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"paymentReference\":\"PAY-789\"}"))
                     .andExpect(status().isConflict())
@@ -278,12 +300,14 @@ class ReservationControllerTest {
         @DisplayName("AC4: confirm EXPIRED reservation returns 409")
         void confirm_expired_returns409() throws Exception {
             UUID reservationId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
 
-            when(reservationService.confirm(eq(reservationId), anyString(), anyString()))
+            when(reservationService.confirm(eq(reservationId), eq(userId), anyString(), anyString()))
                     .thenThrow(new IllegalStateTransitionException(
                             ReservationStatus.EXPIRED, ReservationStatus.CONFIRMED));
 
             mvc.perform(patch("/api/v1/reservations/{id}/confirm", reservationId)
+                            .with(authAs(userId))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"paymentReference\":\"PAY-000\"}"))
                     .andExpect(status().isConflict())
@@ -296,11 +320,13 @@ class ReservationControllerTest {
         @DisplayName("confirm non-existent reservation returns 404")
         void confirm_notFound_returns404() throws Exception {
             UUID reservationId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
 
-            when(reservationService.confirm(eq(reservationId), anyString(), anyString()))
+            when(reservationService.confirm(eq(reservationId), eq(userId), anyString(), anyString()))
                     .thenThrow(new ResourceNotFoundException("Reservation", reservationId));
 
             mvc.perform(patch("/api/v1/reservations/{id}/confirm", reservationId)
+                            .with(authAs(userId))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"paymentReference\":\"PAY-000\"}"))
                     .andExpect(status().isNotFound())
@@ -312,6 +338,7 @@ class ReservationControllerTest {
         @DisplayName("confirm without paymentReference returns 400")
         void confirm_missingPaymentReference_returns400() throws Exception {
             mvc.perform(patch("/api/v1/reservations/{id}/confirm", UUID.randomUUID())
+                            .with(authAs(UUID.randomUUID()))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{}"))
                     .andExpect(status().isBadRequest());
@@ -334,9 +361,9 @@ class ReservationControllerTest {
                     reservationId, showId, userId, "RELEASED",
                     List.of(seatId), Instant.parse("2026-07-17T10:07:00Z"), 0);
 
-            when(reservationService.release(eq(reservationId), anyString())).thenReturn(resp);
+            when(reservationService.release(eq(reservationId), eq(userId), anyString())).thenReturn(resp);
 
-            mvc.perform(patch("/api/v1/reservations/{id}/release", reservationId))
+            mvc.perform(patch("/api/v1/reservations/{id}/release", reservationId).with(authAs(userId)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.reservationId").value(reservationId.toString()))
                     .andExpect(jsonPath("$.status").value("RELEASED"));
@@ -346,12 +373,13 @@ class ReservationControllerTest {
         @DisplayName("AC4: release non-HELD reservation returns 409 problem+json")
         void release_alreadyReleased_returns409() throws Exception {
             UUID reservationId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
 
-            when(reservationService.release(eq(reservationId), anyString()))
+            when(reservationService.release(eq(reservationId), eq(userId), anyString()))
                     .thenThrow(new IllegalStateTransitionException(
                             ReservationStatus.RELEASED, ReservationStatus.RELEASED));
 
-            mvc.perform(patch("/api/v1/reservations/{id}/release", reservationId))
+            mvc.perform(patch("/api/v1/reservations/{id}/release", reservationId).with(authAs(userId)))
                     .andExpect(status().isConflict())
                     .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                     .andExpect(jsonPath("$.title").value("Conflict"))
@@ -364,11 +392,12 @@ class ReservationControllerTest {
         @DisplayName("release non-existent reservation returns 404")
         void release_notFound_returns404() throws Exception {
             UUID reservationId = UUID.randomUUID();
+            UUID userId = UUID.randomUUID();
 
-            when(reservationService.release(eq(reservationId), anyString()))
+            when(reservationService.release(eq(reservationId), eq(userId), anyString()))
                     .thenThrow(new ResourceNotFoundException("Reservation", reservationId));
 
-            mvc.perform(patch("/api/v1/reservations/{id}/release", reservationId))
+            mvc.perform(patch("/api/v1/reservations/{id}/release", reservationId).with(authAs(userId)))
                     .andExpect(status().isNotFound())
                     .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                     .andExpect(jsonPath("$.title").value("Not Found"));
@@ -391,9 +420,9 @@ class ReservationControllerTest {
                     reservationId, showId, userId, "HELD",
                     List.of(seatId), Instant.parse("2026-07-17T10:07:00Z"), 300);
 
-            when(reservationService.get(reservationId)).thenReturn(resp);
+            when(reservationService.get(reservationId, userId)).thenReturn(resp);
 
-            mvc.perform(get("/api/v1/reservations/{id}", reservationId))
+            mvc.perform(get("/api/v1/reservations/{id}", reservationId).with(authAs(userId)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.reservationId").value(reservationId.toString()))
                     .andExpect(jsonPath("$.expiresAt").exists())
@@ -404,13 +433,34 @@ class ReservationControllerTest {
         @DisplayName("GET /reservations/{id} returns 404 problem+json when not found")
         void get_notFound_returns404() throws Exception {
             UUID reservationId = UUID.randomUUID();
-            when(reservationService.get(reservationId))
+            UUID userId = UUID.randomUUID();
+            when(reservationService.get(reservationId, userId))
                     .thenThrow(new ResourceNotFoundException("Reservation", reservationId));
 
-            mvc.perform(get("/api/v1/reservations/{id}", reservationId))
+            mvc.perform(get("/api/v1/reservations/{id}", reservationId).with(authAs(userId)))
                     .andExpect(status().isNotFound())
                     .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                     .andExpect(jsonPath("$.title").value("Not Found"));
+        }
+
+        @Test
+        @DisplayName("STAM-447: GET on another user's reservation returns 404, not the resource")
+        void get_notOwnedByCaller_returns404() throws Exception {
+            UUID reservationId = UUID.randomUUID();
+            UUID callerUserId = UUID.randomUUID();
+
+            when(reservationService.get(reservationId, callerUserId))
+                    .thenThrow(new ResourceNotFoundException("Reservation", reservationId));
+
+            mvc.perform(get("/api/v1/reservations/{id}", reservationId).with(authAs(callerUserId)))
+                    .andExpect(status().isNotFound());
+        }
+
+        @Test
+        @DisplayName("STAM-447: no Authorization at all returns 401, not 404 or 500")
+        void get_unauthenticated_returns401() throws Exception {
+            mvc.perform(get("/api/v1/reservations/{id}", UUID.randomUUID()))
+                    .andExpect(status().isUnauthorized());
         }
     }
 }

@@ -91,18 +91,18 @@ class BookingSagaHappyPathIT {
         UUID idempotencyKey = UUID.randomUUID();
 
         // Step 1: Create a HELD reservation
-        ReservationService.HoldResult holdResult = reservationService.hold(idempotencyKey,
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        ReservationService.HoldResult holdResult = reservationService.hold(idempotencyKey, userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
         assertThat(holdResult.response().status()).isEqualTo("HELD");
 
         // AC1 step 1: SeatsHeld written to outbox, publish it
         outboxPublisher.poll();
 
-        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+        reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
 
         // Step 2: Start saga — emits AuthorizePayment command to payments.commands
-        SagaInstance saga = sagaOrchestrator.startSaga(reservationId);
+        SagaInstance saga = sagaOrchestrator.startSaga(reservationId, userId);
 
         // AC2: saga_instances row shows current state and step mid-flight
         assertThat(saga.getState()).isEqualTo(SagaState.PAYMENT_REQUESTED.name());
@@ -130,7 +130,7 @@ class BookingSagaHappyPathIT {
         sagaOrchestrator.handlePaymentAuthorized(reservationId, UUID.fromString(correlationId));
 
         // AC4: GET reservation returns status: CONFIRMED
-        ReservationResponse confirmed = reservationService.get(reservationId);
+        ReservationResponse confirmed = reservationService.get(reservationId, userId);
         assertThat(confirmed.status()).isEqualTo("CONFIRMED");
 
         // AC5: saga_instances row shows state: COMPLETED, not left intermediate
@@ -172,17 +172,17 @@ class BookingSagaHappyPathIT {
         UUID seatId = UUID.randomUUID();
         UUID idempotencyKey = UUID.randomUUID();
 
-        ReservationService.HoldResult holdResult = reservationService.hold(idempotencyKey,
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        ReservationService.HoldResult holdResult = reservationService.hold(idempotencyKey, userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         // Before saga starts — no saga row
         assertThat(sagaInstanceRepository.findByReservationId(reservationId)).isEmpty();
 
-        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+        reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
 
         // Start saga
-        sagaOrchestrator.startSaga(reservationId);
+        sagaOrchestrator.startSaga(reservationId, userId);
 
         // Mid-flight: saga in PAYMENT_REQUESTED
         SagaInstance saga = sagaInstanceRepository.findByReservationId(reservationId).orElseThrow();
@@ -198,14 +198,14 @@ class BookingSagaHappyPathIT {
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
 
-        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
-        reservationService.setPaymentMethod(reservationId, "pm_card_visa");
+        reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
 
-        SagaInstance first = sagaOrchestrator.startSaga(reservationId);
-        SagaInstance second = sagaOrchestrator.startSaga(reservationId);
+        SagaInstance first = sagaOrchestrator.startSaga(reservationId, userId);
+        SagaInstance second = sagaOrchestrator.startSaga(reservationId, userId);
 
         assertThat(first.getId()).isEqualTo(second.getId());
     }
