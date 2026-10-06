@@ -1,7 +1,6 @@
 package com.stampedeio.booking.config;
 
 import java.io.IOException;
-import java.util.UUID;
 
 import org.slf4j.MDC;
 import org.springframework.core.Ordered;
@@ -29,10 +28,10 @@ public class CorrelationIdFilter implements Filter {
         HttpServletRequest request = (HttpServletRequest) req;
         HttpServletResponse response = (HttpServletResponse) res;
 
-        String correlationId = request.getHeader(HEADER);
-        if (correlationId == null || correlationId.isBlank()) {
-            correlationId = UUID.randomUUID().toString();
-        }
+        // Normalized once here so MDC, the echoed response header and every
+        // outbox row written downstream all agree, even if the inbound header
+        // was missing or malformed.
+        String correlationId = CorrelationIds.parseOrNew(request.getHeader(HEADER)).toString();
 
         MDC.put(MDC_KEY, correlationId);
         MDC.put("service", "booking");

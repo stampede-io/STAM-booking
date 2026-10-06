@@ -21,14 +21,24 @@ public final class CorrelationIds {
     }
 
     public static UUID currentOrNew() {
-        String id = MDC.get(MDC_KEY);
-        if (id == null || id.isBlank()) {
+        return parseOrNew(MDC.get(MDC_KEY));
+    }
+
+    /**
+     * Normalizes a raw, caller-supplied value (e.g. the inbound X-Correlation-Id
+     * header) into a valid UUID. CorrelationIdFilter calls this once at the
+     * request edge so MDC, the echoed response header and every outbox row
+     * written downstream all agree on the same value, even when the inbound
+     * header was blank or malformed.
+     */
+    public static UUID parseOrNew(String raw) {
+        if (raw == null || raw.isBlank()) {
             return UUID.randomUUID();
         }
         try {
-            return UUID.fromString(id);
+            return UUID.fromString(raw);
         } catch (IllegalArgumentException e) {
-            log.warn("Discarding malformed correlation id from MDC: {}", id);
+            log.warn("Discarding malformed correlation id: {}", raw);
             return UUID.randomUUID();
         }
     }

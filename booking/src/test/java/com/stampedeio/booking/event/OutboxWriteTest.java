@@ -77,7 +77,7 @@ class OutboxWriteTest {
         service = new ReservationService(
                 reservationRepository, reservationSeatRepository, reservationEventRepository,
                 outboxRepository, catalogClient, holdMirrorService, transactionTemplate, clock,
-                new ObjectMapper());
+                objectMapper);
     }
 
     @Test
