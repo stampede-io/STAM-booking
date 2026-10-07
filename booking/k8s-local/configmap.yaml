@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: booking-config
+  namespace: stampede
+data:
+  SPRING_PROFILES_ACTIVE: "kind-local"
+  SERVER_PORT: "8080"
+  DB_HOST: "booking-db"
+  DB_PORT: "5432"
+  DB_NAME: "booking"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  CATALOG_URL: "http://catalog:8080"
+  # Not deployed in kind yet — booking's resource-server JWK fetch is lazy,
+  # so this not resolving doesn't block startup or the probes.
+  JWK_SET_URI: "http://identity:8080/oauth2/jwks"
