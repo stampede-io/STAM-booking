@@ -31,9 +31,12 @@ spec:
             # Kafka client) needs more metaspace than the image's default
             # -XX:MaxMetaspaceSize=128m under k8s — OOMs loading Kafka client
             # classes. Override here rather than the shared Dockerfile, which
-            # catalog's lighter classpath doesn't need bumped.
+            # catalog's lighter classpath doesn't need bumped. Heap trimmed
+            # from the image default 256m to leave more headroom above
+            # heap+metaspace within the fixed 640Mi container limit (thread
+            # stacks, JIT code cache, Kafka/Netty direct buffers).
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xmx256m -XX:MaxMetaspaceSize=224m"
+              value: "-Xmx192m -XX:MaxMetaspaceSize=224m"
           resources:
             requests:
               cpu: 100m
