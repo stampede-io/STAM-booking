@@ -23,10 +23,22 @@ spec:
         - analysis:
             templates:
               - templateName: {{ include "booking.fullname" . }}-success-rate-and-latency
+            # live-verified (STAM-385): canary-hash is NOT auto-injected for
+            # inline step analysis despite docs/tutorials implying it is —
+            # it must be wired explicitly, and the enum is "Latest", not
+            # "Canary" (verified against a real failing rollout + rollback).
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
         - setWeight: 50
         - analysis:
             templates:
               - templateName: {{ include "booking.fullname" . }}-success-rate-and-latency
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
         - setWeight: 100
   selector:
     matchLabels:
