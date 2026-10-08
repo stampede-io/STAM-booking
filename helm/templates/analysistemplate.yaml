@@ -1,0 +1,37 @@
+{{- /*
+STAM-63 / AC2: 5xx rate and p99 latency, scoped to the canary pods only
+via rollouts-pod-template-hash — Argo Rollouts auto-supplies canary-hash
+as a step arg when this template is invoked from a canary step's
+inline `analysis`, no manual wiring needed. Relies on the ServiceMonitor
+(platform/charts/stampede, STAM-65) relabeling that pod label onto the
+scraped series — Prometheus doesn't carry pod labels into metric labels
+on its own.
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate-and-latency
+spec:
+  args:
+    - name: canary-hash
+  metrics:
+    - name: error-rate-below-1pct
+      interval: 30s
+      successCondition: result[0] < 1
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            100 * sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}", outcome="SERVER_ERROR"}[2m]))
+            /
+            sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m]))
+    - name: p99-below-300ms
+      interval: 30s
+      successCondition: result[0] < 0.3
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m])) by (le))
