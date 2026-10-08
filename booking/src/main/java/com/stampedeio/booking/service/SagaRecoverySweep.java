@@ -13,6 +13,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import com.stampedeio.booking.domain.SagaInstance;
 import com.stampedeio.booking.domain.SagaState;
 import com.stampedeio.booking.repository.SagaInstanceRepository;
@@ -33,11 +34,25 @@ public class SagaRecoverySweep {
     public SagaRecoverySweep(SagaInstanceRepository sagaInstanceRepository,
                              BookingSagaOrchestrator sagaOrchestrator,
                              Clock clock,
-                             @Value("${saga.recovery.stale-after:PT10M}") Duration staleAfter) {
+                             @Value("${saga.recovery.stale-after:PT10M}") Duration staleAfter,
+                             MeterRegistry meterRegistry) {
         this.sagaInstanceRepository = sagaInstanceRepository;
         this.sagaOrchestrator = sagaOrchestrator;
         this.clock = clock;
         this.staleAfter = staleAfter;
+        // STAM-66 / AC2 (SagaStuck): same TERMINAL_STATES/staleAfter this
+        // sweep already recovers against -- the alert and the self-healing
+        // sweep watch the identical condition, so SagaStuck should start
+        // firing right around when recoverStaleSaga() would already be
+        // acting on it, not some separately-tuned threshold.
+        meterRegistry.gauge("saga_oldest_non_terminal_age_seconds", this, SagaRecoverySweep::oldestNonTerminalAgeSeconds);
+    }
+
+    private double oldestNonTerminalAgeSeconds() {
+        return sagaInstanceRepository.findOldestNonTerminalUpdatedAt(TERMINAL_STATES)
+                .map(oldest -> Duration.between(oldest, Instant.now(clock)).getSeconds())
+                .map(Long::doubleValue)
+                .orElse(0.0);
     }
 
     @EventListener(ApplicationReadyEvent.class)
