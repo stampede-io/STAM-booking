@@ -10,7 +10,11 @@ on its own.
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
-  name: success-rate-and-latency
+  # code-review (STAM-382): named per-service, not a bare literal — booking
+  # and payment both define this template, and an unqualified name collides
+  # the moment both charts land in the same namespace (the planned umbrella
+  # chart, STMP-39).
+  name: {{ include "booking.fullname" . }}-success-rate-and-latency
 spec:
   args:
     - name: canary-hash
@@ -22,10 +26,14 @@ spec:
       provider:
         prometheus:
           address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+          # code-review: "or on() vector(0)" / clamp_min guard against an
+          # empty-vector or 0/0 result during the first analysis tick, when
+          # the fresh canary pod hasn't received 2m of traffic yet — without
+          # it, a quiet canary fails analysis before it's even been exercised.
           query: |
-            100 * sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}", outcome="SERVER_ERROR"}[2m]))
+            100 * (sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}", outcome="SERVER_ERROR"}[2m])) or on() vector(0))
             /
-            sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m]))
+            clamp_min(sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m])) or on() vector(0), 1)
     - name: p99-below-300ms
       interval: 30s
       successCondition: result[0] < 0.3
@@ -33,5 +41,9 @@ spec:
       provider:
         prometheus:
           address: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+          # code-review: histogram_quantile returns NaN over all-zero
+          # buckets (no traffic yet); ">= 0 or on() vector(0)" drops the NaN
+          # series and defaults to 0 latency instead of failing analysis.
           query: |
-            histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m])) by (le))
+            histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m])) by (le)) >= 0
+            or on() vector(0)
