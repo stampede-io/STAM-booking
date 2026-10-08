@@ -50,6 +50,7 @@ class ReservationServiceTest {
     private HoldMirrorService holdMirrorService;
     private TransactionTemplate transactionTemplate;
     private ReservationService service;
+    private io.micrometer.core.instrument.MeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() {
@@ -67,10 +68,11 @@ class ReservationServiceTest {
         when(reservationEventRepository.findMaxSeqByAggregateId(any())).thenReturn(Optional.empty());
         when(reservationEventRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(outboxRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        meterRegistry = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
         service = new ReservationService(
                 reservationRepository, reservationSeatRepository, reservationEventRepository,
                 outboxRepository, catalogClient, holdMirrorService, transactionTemplate,
-                Clock.systemUTC(), new ObjectMapper());
+                Clock.systemUTC(), new ObjectMapper(), meterRegistry);
     }
 
     @Nested
@@ -99,6 +101,10 @@ class ReservationServiceTest {
             assertThat(result.response().seatIds()).containsExactly(seatId);
             assertThat(result.response().expiresAt()).isAfter(Instant.now());
             assertThat(result.response().ttlSeconds()).isBetween(415L, 421L);
+
+            // STAM-398 / AC1: every genuine new hold is counted.
+            assertThat(meterRegistry.get("holds_created_total").counter().count())
+                    .isEqualTo(1.0);
         }
 
         @Test
@@ -119,6 +125,10 @@ class ReservationServiceTest {
                     .isInstanceOf(ConflictException.class)
                     .hasMessageContaining(seatId.toString())
                     .hasMessageContaining("is already held");
+
+            // STAM-398 / AC1: the real oversell-prevention event must be counted.
+            assertThat(meterRegistry.get("oversell_attempts_blocked_total").counter().count())
+                    .isEqualTo(1.0);
         }
 
         @Test
