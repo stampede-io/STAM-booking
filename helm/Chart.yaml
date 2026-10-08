@@ -1,0 +1,6 @@
+apiVersion: v2
+name: booking
+description: STAMPEDE booking service — event-sourced reservation ledger + saga orchestrator, the oversell-prevention core
+type: application
+version: 0.0.1-SNAPSHOT
+appVersion: "0.0.1-SNAPSHOT"

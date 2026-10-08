@@ -1,0 +1,52 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/stampede-io/booking
+  tag: "" # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 384Mi
+  limits:
+    memory: 640Mi
+
+probes:
+  liveness:
+    path: /actuator/health/liveness
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readiness:
+    path: /actuator/health/readiness
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  startup:
+    path: /actuator/health/startup
+    failureThreshold: 30
+    periodSeconds: 5
+
+# Non-sensitive config -> ConfigMap, mounted as env vars.
+config:
+  SPRING_PROFILES_ACTIVE: "k8s"
+  SERVER_PORT: "8080"
+  DB_HOST: "booking-db"
+  DB_PORT: "5432"
+  DB_NAME: "booking"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  CATALOG_URL: "http://catalog:8080"
+  JWK_SET_URI: "http://identity:8080/oauth2/jwks"
+
+# Name of a pre-existing Secret (DB_USERNAME, DB_PASSWORD) mounted via
+# envFrom when set. Not created by this chart — Sealed Secrets lands in
+# STMP-45; until then, create it out-of-band per environment.
+secretName: ""
