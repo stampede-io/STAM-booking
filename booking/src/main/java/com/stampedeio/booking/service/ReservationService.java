@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -49,6 +50,7 @@ public class ReservationService {
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     public ReservationService(ReservationRepository reservationRepository,
                               ReservationSeatRepository reservationSeatRepository,
@@ -58,7 +60,8 @@ public class ReservationService {
                               HoldMirrorService holdMirrorService,
                               TransactionTemplate transactionTemplate,
                               Clock clock,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              MeterRegistry meterRegistry) {
         this.reservationRepository = reservationRepository;
         this.reservationSeatRepository = reservationSeatRepository;
         this.reservationEventRepository = reservationEventRepository;
@@ -68,6 +71,7 @@ public class ReservationService {
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -104,12 +108,17 @@ public class ReservationService {
             long ttlSeconds = Duration.between(Instant.now(clock), saved.getExpiresAt()).getSeconds();
             holdMirrorService.mirror(saved.getId(), ttlSeconds);
             log.info("Hold created reservation={} correlationId={}", saved.getId(), correlationId);
+            meterRegistry.counter("holds_created_total").increment();
             return new HoldResult(ReservationResponse.from(saved, Instant.now(clock)), false);
         } catch (DataIntegrityViolationException ex) {
             UUID conflictingSeat = reservationSeatRepository
                     .findFirstConflictingSeatId(request.showId(), request.seatIds())
                     .orElse(null);
             if (conflictingSeat != null) {
+                // STAM-398 / AC1: the actual oversell-prevention event — the
+                // partial unique index (CLAUDE.md §4.1) just rejected a
+                // genuine seat conflict under contention.
+                meterRegistry.counter("oversell_attempts_blocked_total").increment();
                 throw new ConflictException("Seat " + conflictingSeat + " is already held");
             }
             Reservation replayed = reservationRepository.findByIdempotencyKey(idempotencyKey)

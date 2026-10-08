@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -44,6 +45,7 @@ public class BookingSagaOrchestrator {
     private final HoldMirrorService holdMirrorService;
     private final ObjectMapper objectMapper;
     private final CatalogClient catalogClient;
+    private final MeterRegistry meterRegistry;
 
     public BookingSagaOrchestrator(SagaInstanceRepository sagaInstanceRepository,
                                    ReservationRepository reservationRepository,
@@ -51,7 +53,8 @@ public class BookingSagaOrchestrator {
                                    ReservationService reservationService,
                                    HoldMirrorService holdMirrorService,
                                    ObjectMapper objectMapper,
-                                   CatalogClient catalogClient) {
+                                   CatalogClient catalogClient,
+                                   MeterRegistry meterRegistry) {
         this.sagaInstanceRepository = sagaInstanceRepository;
         this.reservationRepository = reservationRepository;
         this.outboxRepository = outboxRepository;
@@ -59,6 +62,19 @@ public class BookingSagaOrchestrator {
         this.holdMirrorService = holdMirrorService;
         this.objectMapper = objectMapper;
         this.catalogClient = catalogClient;
+        this.meterRegistry = meterRegistry;
+    }
+
+    /**
+     * STAM-398 / AC1: counts completed compensations once per saga -- only at
+     * the terminal COMPENSATED transition, not at COMPENSATING (which just
+     * marks the start of a compensation already counted when it finishes).
+     */
+    private void advance(SagaInstance saga, SagaState state, String step) {
+        saga.advance(state, step);
+        if (state == SagaState.COMPENSATED) {
+            meterRegistry.counter("saga_compensations_total").increment();
+        }
     }
 
     @Transactional
@@ -90,7 +106,7 @@ public class BookingSagaOrchestrator {
                     // with no request in flight, so they correctly mint their own.
                     UUID correlationId = CorrelationIds.currentOrNew();
                     SagaInstance saga = new SagaInstance(SAGA_TYPE, reservation);
-                    saga.advance(SagaState.PAYMENT_REQUESTED, "EMIT_AUTHORIZE_PAYMENT");
+                    advance(saga, SagaState.PAYMENT_REQUESTED, "EMIT_AUTHORIZE_PAYMENT");
 
                     String commandPayload = buildAuthorizePaymentPayload(reservation, correlationId);
                     outboxRepository.save(new OutboxMessage(
@@ -119,7 +135,7 @@ public class BookingSagaOrchestrator {
 
         if (reservation.getStatus() == ReservationStatus.EXPIRED) {
             log.warn("Late PaymentAuthorized for EXPIRED reservation={}, issuing refund", reservationId);
-            saga.advance(SagaState.COMPENSATING, "LATE_AUTH_REFUND_REQUESTED");
+            advance(saga, SagaState.COMPENSATING, "LATE_AUTH_REFUND_REQUESTED");
 
             UUID refundCorrelationId = UUID.randomUUID();
             String commandPayload = buildPayload(reservation, refundCorrelationId);
@@ -146,7 +162,7 @@ public class BookingSagaOrchestrator {
                 "Reservation", reservation.getId(), "ReservationConfirmed", eventPayload,
                 correlationId, TOPIC_RESERVATIONS_EVENTS));
 
-        saga.advance(SagaState.COMPLETED, "RESERVATION_CONFIRMED");
+        advance(saga, SagaState.COMPLETED, "RESERVATION_CONFIRMED");
         sagaInstanceRepository.save(saga);
 
         log.info("Saga completed for reservation={} correlationId={}", reservationId, correlationId);
@@ -177,7 +193,7 @@ public class BookingSagaOrchestrator {
                 "Reservation", reservation.getId(), "PaymentRefunded", eventPayload,
                 correlationId, TOPIC_RESERVATIONS_EVENTS));
 
-        saga.advance(SagaState.COMPENSATED, "REFUND_ISSUED");
+        advance(saga, SagaState.COMPENSATED, "REFUND_ISSUED");
         sagaInstanceRepository.save(saga);
 
         log.info("Saga compensated (refund) for reservation={} correlationId={}", reservationId, correlationId);
@@ -195,7 +211,7 @@ public class BookingSagaOrchestrator {
             return;
         }
 
-        saga.advance(SagaState.COMPENSATING, "RELEASING_SEATS");
+        advance(saga, SagaState.COMPENSATING, "RELEASING_SEATS");
 
         Reservation reservation = saga.getReservation();
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.RELEASED);
@@ -213,7 +229,7 @@ public class BookingSagaOrchestrator {
                 "Reservation", reservation.getId(), "SeatsReleased", eventPayload,
                 correlationId, TOPIC_RESERVATIONS_EVENTS));
 
-        saga.advance(SagaState.COMPENSATED, "SEATS_RELEASED");
+        advance(saga, SagaState.COMPENSATED, "SEATS_RELEASED");
         sagaInstanceRepository.save(saga);
 
         log.info("Saga compensated for reservation={} correlationId={}", reservationId, correlationId);
@@ -256,7 +272,7 @@ public class BookingSagaOrchestrator {
                     correlationId, TOPIC_RESERVATIONS_EVENTS));
         }
 
-        saga.advance(SagaState.COMPENSATED, "RECOVERY_SWEEP_COMPENSATED");
+        advance(saga, SagaState.COMPENSATED, "RECOVERY_SWEEP_COMPENSATED");
         sagaInstanceRepository.save(saga);
         log.info("Recovery: compensated saga={} reservation={}", saga.getId(), reservation.getId());
     }
@@ -285,6 +301,7 @@ public class BookingSagaOrchestrator {
 
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.EXPIRED);
         reservation.setStatus(ReservationStatus.EXPIRED);
+        meterRegistry.counter("holds_expired_total").increment();
         reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.RELEASED));
         holdMirrorService.remove(reservation.getId());
 
@@ -296,8 +313,8 @@ public class BookingSagaOrchestrator {
         sagaInstanceRepository.findByReservationId(reservation.getId()).ifPresent(saga -> {
             if (!SagaState.COMPENSATED.name().equals(saga.getState())
                     && !SagaState.COMPLETED.name().equals(saga.getState())) {
-                saga.advance(SagaState.COMPENSATING, "HOLD_EXPIRED");
-                saga.advance(SagaState.COMPENSATED, "HOLD_EXPIRED_SEATS_FREED");
+                advance(saga, SagaState.COMPENSATING, "HOLD_EXPIRED");
+                advance(saga, SagaState.COMPENSATED, "HOLD_EXPIRED_SEATS_FREED");
                 sagaInstanceRepository.save(saga);
                 log.info("Saga compensated via hold expiry for reservation={}", reservationId);
             }
