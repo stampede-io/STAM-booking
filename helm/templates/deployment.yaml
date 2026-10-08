@@ -1,11 +1,45 @@
-apiVersion: apps/v1
-kind: Deployment
+{{- /*
+STAM-63 / AC1: Rollout, not Deployment — progressive canary with
+Prometheus-gated analysis instead of an all-at-once rolling update.
+Only booking and payment get this (the two services on the saga's
+money path); the other four stay plain Deployments.
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: {{ include "booking.fullname" . }}
   labels:
     {{- include "booking.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # ponytail: no trafficRouting provider (no Istio/Nginx/ALB in this stack),
+  # so setWeight is only approximated by canary:stable replica ratio — at
+  # replicaCount below ~5 the steps below don't land close to 10%/50%.
+  # Upgrade path: a trafficRouting block once Sprint 3's ingress is chosen.
+  strategy:
+    canary:
+      steps:
+        - setWeight: 10
+        - analysis:
+            templates:
+              - templateName: {{ include "booking.fullname" . }}-success-rate-and-latency
+            # live-verified (STAM-385): canary-hash is NOT auto-injected for
+            # inline step analysis despite docs/tutorials implying it is —
+            # it must be wired explicitly, and the enum is "Latest", not
+            # "Canary" (verified against a real failing rollout + rollback).
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+        - setWeight: 50
+        - analysis:
+            templates:
+              - templateName: {{ include "booking.fullname" . }}-success-rate-and-latency
+            args:
+              - name: canary-hash
+                valueFrom:
+                  podTemplateHashValue: Latest
+        - setWeight: 100
   selector:
     matchLabels:
       {{- include "booking.selectorLabels" . | nindent 6 }}
