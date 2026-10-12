@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking
+  namespace: stampede
+  labels:
+    app: booking
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: booking
+  template:
+    metadata:
+      labels:
+        app: booking
+    spec:
+      containers:
+        - name: booking
+          image: booking:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: booking-config
+            - secretRef:
+                name: booking-secret
+          env:
+            # Booking's dependency set (Resilience4j, OAuth2 resource server,
+            # Kafka client) needs more metaspace than the image's default
+            # -XX:MaxMetaspaceSize=128m under k8s — OOMs loading Kafka client
+            # classes. Override here rather than the shared Dockerfile, which
+            # catalog's lighter classpath doesn't need bumped. Heap trimmed
+            # from the image default 256m to leave more headroom above
+            # heap+metaspace within the fixed 640Mi container limit (thread
+            # stacks, JIT code cache, Kafka/Netty direct buffers).
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xmx192m -XX:MaxMetaspaceSize=224m"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              memory: 640Mi
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /actuator/health/startup
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 5
