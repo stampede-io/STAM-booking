@@ -89,6 +89,15 @@
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
 
+		<!-- STAM-67 / AC1 (traceId): no exporter configured yet, that is
+		     STAM-68's job (OTel tracing across HTTP + Kafka). This alone gets
+		     Boot's BraveAutoConfiguration to generate a span per request and
+		     its MDCScopeDecorator to put traceId/spanId into every log line. -->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-tracing-bridge-brave</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>

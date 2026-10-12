@@ -3,6 +3,7 @@ package com.stampedeio.booking.event;
 import java.util.List;
 import java.util.UUID;
 
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -10,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.stampedeio.booking.config.KafkaCorrelationIdInterceptor;
 import com.stampedeio.booking.domain.OutboxMessage;
 import com.stampedeio.booking.repository.OutboxRepository;
 
@@ -44,7 +46,10 @@ public class OutboxPublisher {
                     msg.getPayload()
             );
 
-            kafkaTemplate.send(msg.getTopic(), msg.getAggregateId().toString(), envelope);
+            ProducerRecord<String, Object> record = new ProducerRecord<>(
+                    msg.getTopic(), msg.getAggregateId().toString(), envelope);
+            KafkaCorrelationIdInterceptor.addHeader(record, correlationId);
+            kafkaTemplate.send(record);
             msg.markPublished();
         }
 
