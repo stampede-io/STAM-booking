@@ -53,7 +53,8 @@ class BookingSagaOrchestratorTest {
 
         orchestrator = new BookingSagaOrchestrator(
                 sagaInstanceRepository, reservationRepository, outboxRepository,
-                reservationService, holdMirrorService, objectMapper, catalogClient);
+                reservationService, holdMirrorService, objectMapper, catalogClient,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     @AfterEach
