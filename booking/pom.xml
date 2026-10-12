@@ -57,6 +57,15 @@
 				<artifactId>bcprov-jdk18on</artifactId>
 				<version>1.85</version>
 			</dependency>
+			<!-- Not managed by the Boot BOM; pulled in transitively by kafka-clients
+			     (kafka-clients 4.2.1 depends on the at.yawk.lz4 fork, not org.lz4).
+			     CVE-2026-106451 HIGH (arbitrary code execution via insecure temp
+			     file handling), fixed in 1.11.4. -->
+			<dependency>
+				<groupId>at.yawk.lz4</groupId>
+				<artifactId>lz4-java</artifactId>
+				<version>1.11.4</version>
+			</dependency>
 		</dependencies>
 	</dependencyManagement>
 	<dependencies>

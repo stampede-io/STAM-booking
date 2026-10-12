@@ -77,7 +77,7 @@ class OutboxWriteTest {
         service = new ReservationService(
                 reservationRepository, reservationSeatRepository, reservationEventRepository,
                 outboxRepository, catalogClient, holdMirrorService, transactionTemplate, clock,
-                objectMapper);
+                objectMapper, new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     @Test
