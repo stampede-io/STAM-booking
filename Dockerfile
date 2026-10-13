@@ -17,6 +17,6 @@ RUN useradd -r -u 1001 app
 USER 1001
 WORKDIR /app
 COPY --from=build /src/target/*.jar app.jar
-ENV JAVA_TOOL_OPTIONS="-Xmx256m -XX:MaxMetaspaceSize=128m"
+ENV JAVA_TOOL_OPTIONS="-Xmx256m -XX:MaxMetaspaceSize=224m"
 EXPOSE 8080
 ENTRYPOINT ["java","-jar","app.jar"]
