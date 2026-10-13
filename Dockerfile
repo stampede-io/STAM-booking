@@ -18,7 +18,7 @@ RUN useradd -r -u 1001 app
 # instrumentation, auto-attached via -javaagent below. --chmod since ADD
 # from a URL defaults to 0600, unreadable by the non-root user switched to
 # two lines down.
-ADD --chmod=644 https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.10.0/opentelemetry-javaagent.jar /otel-javaagent.jar
+ADD --chmod=644 https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.26.1/opentelemetry-javaagent.jar /otel-javaagent.jar
 USER 1001
 WORKDIR /app
 COPY --from=build /src/target/*.jar app.jar
