@@ -21,6 +21,12 @@ spec:
   metrics:
     - name: error-rate-below-1pct
       interval: 30s
+      # STAM-324: an inline step analysis must terminate -- Argo Rollouts
+      # rejects a metric with no count as "runs indefinitely" (found by
+      # actually deploying this chart to kind: the Rollout sat at 0 pods,
+      # phase Degraded, InvalidSpec). 5 x 30s = 2.5m, long enough to see a
+      # couple of the 2m-window query's data points move.
+      count: 5
       successCondition: result[0] < 1
       failureLimit: 1
       provider:
@@ -36,6 +42,7 @@ spec:
             clamp_min(sum(rate(http_server_requests_seconds_count{rollouts_pod_template_hash="{{"{{"}}args.canary-hash{{"}}"}}"}[2m])) or on() vector(0), 1)
     - name: p99-below-300ms
       interval: 30s
+      count: 5
       successCondition: result[0] < 0.3
       failureLimit: 1
       provider:
