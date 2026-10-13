@@ -3,18 +3,26 @@ package com.stampedeio.booking.service;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stampedeio.booking.api.CreateReservationRequest;
 import com.stampedeio.booking.api.ReservationResponse;
 import com.stampedeio.booking.catalog.CatalogClient;
+import com.stampedeio.booking.config.CorrelationIds;
 import com.stampedeio.booking.domain.Reservation;
 import com.stampedeio.booking.domain.ReservationEvent;
 import com.stampedeio.booking.domain.ReservationStateMachine;
@@ -31,6 +39,8 @@ import com.stampedeio.booking.repository.ReservationSeatRepository;
 @Service
 public class ReservationService {
 
+    private static final Logger log = LoggerFactory.getLogger(ReservationService.class);
+
     private final ReservationRepository reservationRepository;
     private final ReservationSeatRepository reservationSeatRepository;
     private final ReservationEventRepository reservationEventRepository;
@@ -39,6 +49,8 @@ public class ReservationService {
     private final HoldMirrorService holdMirrorService;
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
+    private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     public ReservationService(ReservationRepository reservationRepository,
                               ReservationSeatRepository reservationSeatRepository,
@@ -47,7 +59,9 @@ public class ReservationService {
                               CatalogClient catalogClient,
                               HoldMirrorService holdMirrorService,
                               TransactionTemplate transactionTemplate,
-                              Clock clock) {
+                              Clock clock,
+                              ObjectMapper objectMapper,
+                              MeterRegistry meterRegistry) {
         this.reservationRepository = reservationRepository;
         this.reservationSeatRepository = reservationSeatRepository;
         this.reservationEventRepository = reservationEventRepository;
@@ -56,23 +70,36 @@ public class ReservationService {
         this.holdMirrorService = holdMirrorService;
         this.transactionTemplate = transactionTemplate;
         this.clock = clock;
+        this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
     }
 
-    public HoldResult hold(UUID idempotencyKey, CreateReservationRequest request) {
+    /**
+     * The gateway (STAM-443) forwards the caller's correlation ID into MDC via
+     * CorrelationIdFilter before the controller runs. CorrelationIds.currentOrNew()
+     * always returns a valid UUID, so the outbox row's typed correlation_id column
+     * is never null even if the inbound header was malformed.
+     */
+    private static String currentCorrelationId() {
+        return CorrelationIds.currentOrNew().toString();
+    }
+
+    public HoldResult hold(UUID idempotencyKey, UUID callerUserId, CreateReservationRequest request) {
         Optional<Reservation> existing = reservationRepository.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
+            checkOwnership(existing.get(), callerUserId);
             return new HoldResult(ReservationResponse.from(existing.get(), Instant.now(clock)), true);
         }
 
         catalogClient.validateSeatsForShow(request.showId(), request.seatIds());
 
-        Reservation reservation = new Reservation(request.showId(), request.userId(), idempotencyKey);
+        Reservation reservation = new Reservation(request.showId(), callerUserId, idempotencyKey);
         request.seatIds().forEach(reservation::addSeat);
 
+        String correlationId = currentCorrelationId();
         try {
             Reservation saved = transactionTemplate.execute(status -> {
                 Reservation persisted = reservationRepository.saveAndFlush(reservation);
-                String correlationId = UUID.randomUUID().toString();
                 appendEvent(persisted, "SEATS_HELD", correlationId, null);
                 appendOutbox(persisted, "SeatsHeld", correlationId);
                 return persisted;
@@ -80,12 +107,18 @@ public class ReservationService {
 
             long ttlSeconds = Duration.between(Instant.now(clock), saved.getExpiresAt()).getSeconds();
             holdMirrorService.mirror(saved.getId(), ttlSeconds);
+            log.info("Hold created reservation={} correlationId={}", saved.getId(), correlationId);
+            meterRegistry.counter("holds_created_total").increment();
             return new HoldResult(ReservationResponse.from(saved, Instant.now(clock)), false);
         } catch (DataIntegrityViolationException ex) {
             UUID conflictingSeat = reservationSeatRepository
                     .findFirstConflictingSeatId(request.showId(), request.seatIds())
                     .orElse(null);
             if (conflictingSeat != null) {
+                // STAM-398 / AC1: the actual oversell-prevention event — the
+                // partial unique index (CLAUDE.md §4.1) just rejected a
+                // genuine seat conflict under contention.
+                meterRegistry.counter("oversell_attempts_blocked_total").increment();
                 throw new ConflictException("Seat " + conflictingSeat + " is already held");
             }
             Reservation replayed = reservationRepository.findByIdempotencyKey(idempotencyKey)
@@ -95,9 +128,11 @@ public class ReservationService {
     }
 
     @Transactional
-    public ReservationResponse confirm(UUID reservationId, String paymentReference, String correlationId) {
+    public ReservationResponse confirm(UUID reservationId, UUID callerUserId, String paymentReference,
+                                       String correlationId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
 
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.CONFIRMED);
         reservation.setStatus(ReservationStatus.CONFIRMED);
@@ -113,9 +148,10 @@ public class ReservationService {
     }
 
     @Transactional
-    public ReservationResponse release(UUID reservationId, String correlationId) {
+    public ReservationResponse release(UUID reservationId, UUID callerUserId, String correlationId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
 
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.RELEASED);
         reservation.setStatus(ReservationStatus.RELEASED);
@@ -130,25 +166,54 @@ public class ReservationService {
         return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
     }
 
-    @Transactional(readOnly = true)
-    public ReservationResponse get(UUID reservationId) {
+    @Transactional
+    public ReservationResponse setPaymentMethod(UUID reservationId, UUID callerUserId, String paymentMethodId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
+
+        if (reservation.getStatus() != ReservationStatus.HELD) {
+            throw new ConflictException(
+                    "Cannot set payment method for reservation in state " + reservation.getStatus());
+        }
+
+        reservation.setPaymentMethodId(paymentMethodId);
+        return ReservationResponse.from(reservationRepository.save(reservation), Instant.now(clock));
+    }
+
+    @Transactional(readOnly = true)
+    public ReservationResponse get(UUID reservationId, UUID callerUserId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+        checkOwnership(reservation, callerUserId);
         return ReservationResponse.from(reservation, Instant.now(clock));
     }
 
+    /**
+     * STAM-447: 404, not 403 — a caller who doesn't own the reservation gets
+     * the same response as one that doesn't exist, so the ID itself never
+     * confirms ownership either way.
+     */
+    private static void checkOwnership(Reservation reservation, UUID callerUserId) {
+        if (!reservation.getUserId().equals(callerUserId)) {
+            throw new ResourceNotFoundException("Reservation", reservation.getId());
+        }
+    }
+
     public void appendOutbox(Reservation reservation, String eventType, String correlationId) {
-        String seatIds = reservation.getSeats().stream()
-                .map(s -> "\"" + s.getSeatId() + "\"")
-                .collect(java.util.stream.Collectors.joining(","));
-        String payload = "{\"reservationId\":\"" + reservation.getId()
-                + "\",\"showId\":\"" + reservation.getShowId()
-                + "\",\"seatIds\":[" + seatIds + "]"
-                + ",\"status\":\"" + reservation.getStatus()
-                + "\",\"correlationId\":\"" + correlationId + "\"}";
+        List<String> seatIds = reservation.getSeats().stream()
+                .map(s -> s.getSeatId().toString())
+                .toList();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.getId());
+        payload.put("showId", reservation.getShowId());
+        payload.put("seatIds", seatIds);
+        payload.put("status", reservation.getStatus());
+        payload.put("correlationId", correlationId);
+
         UUID corrId = parseUuidOrNull(correlationId);
         outboxRepository.save(new OutboxMessage(
-                "Reservation", reservation.getId(), eventType, payload,
+                "Reservation", reservation.getId(), eventType, writeJson(payload),
                 corrId, "reservations.events"));
     }
 
@@ -158,18 +223,27 @@ public class ReservationService {
                 .map(s -> s + 1)
                 .orElse(1);
 
-        String occurredAt = Instant.now(clock).toString();
-        StringBuilder payload = new StringBuilder();
-        payload.append("{\"state\":\"").append(reservation.getStatus())
-                .append("\",\"occurredAt\":\"").append(occurredAt)
-                .append("\",\"correlationId\":\"").append(correlationId).append("\"");
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("state", reservation.getStatus());
+        payload.put("occurredAt", Instant.now(clock).toString());
+        payload.put("correlationId", correlationId);
         if (paymentReference != null) {
-            payload.append(",\"paymentReference\":\"").append(paymentReference).append("\"");
+            payload.put("paymentReference", paymentReference);
         }
-        payload.append("}");
 
         reservationEventRepository.save(
-                new ReservationEvent(reservation.getId(), nextSeq, eventType, payload.toString()));
+                new ReservationEvent(reservation.getId(), nextSeq, eventType, writeJson(payload)));
+    }
+
+    /** Outbox/event payloads carry caller-supplied strings (correlation ID,
+     * payment reference); building them by concatenation lets a value
+     * containing a quote corrupt the JSON. */
+    private String writeJson(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize payload: " + payload.keySet(), e);
+        }
     }
 
     private static UUID parseUuidOrNull(String value) {

@@ -1,12 +1,20 @@
 package com.stampedeio.booking.saga;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stampedeio.booking.catalog.CatalogClient;
+import com.stampedeio.booking.config.CorrelationIds;
 import com.stampedeio.booking.domain.OutboxMessage;
 import com.stampedeio.booking.domain.Reservation;
 import com.stampedeio.booking.domain.ReservationStateMachine;
@@ -15,6 +23,7 @@ import com.stampedeio.booking.domain.SagaInstance;
 import com.stampedeio.booking.domain.SagaState;
 import com.stampedeio.booking.domain.SeatHoldStatus;
 import com.stampedeio.booking.exception.ResourceNotFoundException;
+import com.stampedeio.booking.exception.UnprocessableEntityException;
 import com.stampedeio.booking.repository.OutboxRepository;
 import com.stampedeio.booking.repository.ReservationRepository;
 import com.stampedeio.booking.repository.SagaInstanceRepository;
@@ -34,37 +43,72 @@ public class BookingSagaOrchestrator {
     private final OutboxRepository outboxRepository;
     private final ReservationService reservationService;
     private final HoldMirrorService holdMirrorService;
+    private final ObjectMapper objectMapper;
+    private final CatalogClient catalogClient;
+    private final MeterRegistry meterRegistry;
 
     public BookingSagaOrchestrator(SagaInstanceRepository sagaInstanceRepository,
                                    ReservationRepository reservationRepository,
                                    OutboxRepository outboxRepository,
                                    ReservationService reservationService,
-                                   HoldMirrorService holdMirrorService) {
+                                   HoldMirrorService holdMirrorService,
+                                   ObjectMapper objectMapper,
+                                   CatalogClient catalogClient,
+                                   MeterRegistry meterRegistry) {
         this.sagaInstanceRepository = sagaInstanceRepository;
         this.reservationRepository = reservationRepository;
         this.outboxRepository = outboxRepository;
         this.reservationService = reservationService;
         this.holdMirrorService = holdMirrorService;
+        this.objectMapper = objectMapper;
+        this.catalogClient = catalogClient;
+        this.meterRegistry = meterRegistry;
+    }
+
+    /**
+     * STAM-398 / AC1: counts completed compensations once per saga -- only at
+     * the terminal COMPENSATED transition, not at COMPENSATING (which just
+     * marks the start of a compensation already counted when it finishes).
+     */
+    private void advance(SagaInstance saga, SagaState state, String step) {
+        saga.advance(state, step);
+        if (state == SagaState.COMPENSATED) {
+            meterRegistry.counter("saga_compensations_total").increment();
+        }
     }
 
     @Transactional
-    public SagaInstance startSaga(UUID reservationId) {
+    public SagaInstance startSaga(UUID reservationId, UUID callerUserId) {
         Reservation reservation = reservationRepository.findById(reservationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        // STAM-447: 404, not 403 — matches ReservationService's ownership check.
+        if (!reservation.getUserId().equals(callerUserId)) {
+            throw new ResourceNotFoundException("Reservation", reservationId);
+        }
 
         if (reservation.getStatus() != ReservationStatus.HELD) {
             throw new IllegalStateException(
                     "Cannot start saga for reservation in state " + reservation.getStatus());
         }
 
+        if (reservation.getPaymentMethodId() == null || reservation.getPaymentMethodId().isBlank()) {
+            throw new UnprocessableEntityException(
+                    "No payment method set for reservation " + reservationId
+                            + " — call PATCH .../payment-method first");
+        }
+
         // Idempotent: if saga already exists for this reservation, return it
         return sagaInstanceRepository.findByReservationId(reservationId)
                 .orElseGet(() -> {
-                    UUID correlationId = UUID.randomUUID();
+                    // STAM-443: the gateway forwards the caller's correlation ID into MDC.
+                    // Compensation/recovery paths below run from a Kafka consumer or scheduler
+                    // with no request in flight, so they correctly mint their own.
+                    UUID correlationId = CorrelationIds.currentOrNew();
                     SagaInstance saga = new SagaInstance(SAGA_TYPE, reservation);
-                    saga.advance(SagaState.PAYMENT_REQUESTED, "EMIT_AUTHORIZE_PAYMENT");
+                    advance(saga, SagaState.PAYMENT_REQUESTED, "EMIT_AUTHORIZE_PAYMENT");
 
-                    String commandPayload = buildPayload(reservation, correlationId);
+                    String commandPayload = buildAuthorizePaymentPayload(reservation, correlationId);
                     outboxRepository.save(new OutboxMessage(
                             "Reservation", reservation.getId(), "AuthorizePayment", commandPayload,
                             correlationId, TOPIC_PAYMENTS_COMMANDS));
@@ -91,7 +135,7 @@ public class BookingSagaOrchestrator {
 
         if (reservation.getStatus() == ReservationStatus.EXPIRED) {
             log.warn("Late PaymentAuthorized for EXPIRED reservation={}, issuing refund", reservationId);
-            saga.advance(SagaState.COMPENSATING, "LATE_AUTH_REFUND_REQUESTED");
+            advance(saga, SagaState.COMPENSATING, "LATE_AUTH_REFUND_REQUESTED");
 
             UUID refundCorrelationId = UUID.randomUUID();
             String commandPayload = buildPayload(reservation, refundCorrelationId);
@@ -118,7 +162,7 @@ public class BookingSagaOrchestrator {
                 "Reservation", reservation.getId(), "ReservationConfirmed", eventPayload,
                 correlationId, TOPIC_RESERVATIONS_EVENTS));
 
-        saga.advance(SagaState.COMPLETED, "RESERVATION_CONFIRMED");
+        advance(saga, SagaState.COMPLETED, "RESERVATION_CONFIRMED");
         sagaInstanceRepository.save(saga);
 
         log.info("Saga completed for reservation={} correlationId={}", reservationId, correlationId);
@@ -149,7 +193,7 @@ public class BookingSagaOrchestrator {
                 "Reservation", reservation.getId(), "PaymentRefunded", eventPayload,
                 correlationId, TOPIC_RESERVATIONS_EVENTS));
 
-        saga.advance(SagaState.COMPENSATED, "REFUND_ISSUED");
+        advance(saga, SagaState.COMPENSATED, "REFUND_ISSUED");
         sagaInstanceRepository.save(saga);
 
         log.info("Saga compensated (refund) for reservation={} correlationId={}", reservationId, correlationId);
@@ -167,7 +211,7 @@ public class BookingSagaOrchestrator {
             return;
         }
 
-        saga.advance(SagaState.COMPENSATING, "RELEASING_SEATS");
+        advance(saga, SagaState.COMPENSATING, "RELEASING_SEATS");
 
         Reservation reservation = saga.getReservation();
         ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.RELEASED);
@@ -185,7 +229,7 @@ public class BookingSagaOrchestrator {
                 "Reservation", reservation.getId(), "SeatsReleased", eventPayload,
                 correlationId, TOPIC_RESERVATIONS_EVENTS));
 
-        saga.advance(SagaState.COMPENSATED, "SEATS_RELEASED");
+        advance(saga, SagaState.COMPENSATED, "SEATS_RELEASED");
         sagaInstanceRepository.save(saga);
 
         log.info("Saga compensated for reservation={} correlationId={}", reservationId, correlationId);
@@ -200,7 +244,7 @@ public class BookingSagaOrchestrator {
 
         if (SagaState.PAYMENT_REQUESTED.name().equals(state)) {
             UUID correlationId = UUID.randomUUID();
-            String commandPayload = buildPayload(reservation, correlationId);
+            String commandPayload = buildAuthorizePaymentPayload(reservation, correlationId);
             outboxRepository.save(new OutboxMessage(
                     "Reservation", reservation.getId(), "AuthorizePayment", commandPayload,
                     correlationId, TOPIC_PAYMENTS_COMMANDS));
@@ -228,19 +272,96 @@ public class BookingSagaOrchestrator {
                     correlationId, TOPIC_RESERVATIONS_EVENTS));
         }
 
-        saga.advance(SagaState.COMPENSATED, "RECOVERY_SWEEP_COMPENSATED");
+        advance(saga, SagaState.COMPENSATED, "RECOVERY_SWEEP_COMPENSATED");
         sagaInstanceRepository.save(saga);
         log.info("Recovery: compensated saga={} reservation={}", saga.getId(), reservation.getId());
     }
 
+    /**
+     * STAM-446: the whole expiry of one reservation — status, seats, event,
+     * outbox, saga compensation — as a single transaction on a proxied bean,
+     * called per-reservation from HoldExpiryScheduler. The re-check against a
+     * freshly loaded status (rather than the caller's query snapshot) means a
+     * losing concurrent sweep — same instance or, eventually, another replica —
+     * finds the reservation already EXPIRED and returns without writing
+     * anything. Any residual race that still reaches the unique constraint on
+     * reservation_events is left for the caller to catch; it must never be
+     * fatal here.
+     */
+    @Transactional
+    public void expireHeldReservation(UUID reservationId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Reservation", reservationId));
+
+        if (reservation.getStatus() != ReservationStatus.HELD) {
+            log.info("Reservation={} no longer HELD (status={}), skipping — "
+                    + "already handled by a concurrent sweep", reservationId, reservation.getStatus());
+            return;
+        }
+
+        ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.EXPIRED);
+        reservation.setStatus(ReservationStatus.EXPIRED);
+        meterRegistry.counter("holds_expired_total").increment();
+        reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.RELEASED));
+        holdMirrorService.remove(reservation.getId());
+
+        String correlationId = UUID.randomUUID().toString();
+        reservationService.appendEvent(reservation, "RESERVATION_EXPIRED", correlationId, null);
+        reservationService.appendOutbox(reservation, "HoldExpired", correlationId);
+        reservationRepository.save(reservation);
+
+        sagaInstanceRepository.findByReservationId(reservation.getId()).ifPresent(saga -> {
+            if (!SagaState.COMPENSATED.name().equals(saga.getState())
+                    && !SagaState.COMPLETED.name().equals(saga.getState())) {
+                advance(saga, SagaState.COMPENSATING, "HOLD_EXPIRED");
+                advance(saga, SagaState.COMPENSATED, "HOLD_EXPIRED_SEATS_FREED");
+                sagaInstanceRepository.save(saga);
+                log.info("Saga compensated via hold expiry for reservation={}", reservationId);
+            }
+        });
+    }
+
     private String buildPayload(Reservation reservation, UUID correlationId) {
-        String seatIds = reservation.getSeats().stream()
-                .map(s -> "\"" + s.getSeatId() + "\"")
-                .collect(java.util.stream.Collectors.joining(","));
-        return "{\"reservationId\":\"" + reservation.getId()
-                + "\",\"showId\":\"" + reservation.getShowId()
-                + "\",\"seatIds\":[" + seatIds + "]"
-                + ",\"status\":\"" + reservation.getStatus()
-                + "\",\"correlationId\":\"" + correlationId + "\"}";
+        List<String> seatIds = reservation.getSeats().stream()
+                .map(s -> s.getSeatId().toString())
+                .toList();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.getId());
+        payload.put("showId", reservation.getShowId());
+        payload.put("seatIds", seatIds);
+        payload.put("status", reservation.getStatus());
+        payload.put("correlationId", correlationId);
+        return writeJson(payload, reservation.getId());
+    }
+
+    /**
+     * STAM-442: the AuthorizePayment command additionally carries paymentMethodId
+     * (set via PATCH .../payment-method before submit-payment) and amountCents,
+     * computed server-side from catalog's seat prices rather than trusted from
+     * the client.
+     */
+    private String buildAuthorizePaymentPayload(Reservation reservation, UUID correlationId) {
+        List<UUID> seatIds = reservation.getSeats().stream()
+                .map(s -> s.getSeatId())
+                .toList();
+        long amountCents = catalogClient.totalPriceCentsForSeats(reservation.getShowId(), seatIds);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reservationId", reservation.getId());
+        payload.put("showId", reservation.getShowId());
+        payload.put("seatIds", seatIds.stream().map(UUID::toString).toList());
+        payload.put("status", reservation.getStatus());
+        payload.put("correlationId", correlationId);
+        payload.put("paymentMethodId", reservation.getPaymentMethodId());
+        payload.put("amountCents", amountCents);
+        return writeJson(payload, reservation.getId());
+    }
+
+    private String writeJson(Map<String, Object> payload, UUID reservationId) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize saga payload for reservation " + reservationId, e);
+        }
     }
 }

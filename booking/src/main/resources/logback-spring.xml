@@ -3,11 +3,19 @@
 
     <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- STAM-67 / AC1: userId is intentionally absent from unauthenticated
+                 requests. UserIdMdcFilter only ever puts it in MDC when there is
+                 one, never a blank placeholder. -->
             <includeMdcKeyName>correlationId</includeMdcKeyName>
             <includeMdcKeyName>service</includeMdcKeyName>
+            <includeMdcKeyName>userId</includeMdcKeyName>
+            <!-- Populated automatically by micrometer-tracing-bridge-brave's MDC
+                 scope decorator, no manual MDC.put anywhere for these two. -->
+            <includeMdcKeyName>traceId</includeMdcKeyName>
+            <includeMdcKeyName>spanId</includeMdcKeyName>
             <timeZone>UTC</timeZone>
             <fieldNames>
-                <timestamp>@timestamp</timestamp>
+                <timestamp>timestamp</timestamp>
                 <version>[ignore]</version>
             </fieldNames>
         </encoder>

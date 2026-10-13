@@ -95,14 +95,16 @@ class LateAuthAfterExpiryIT {
         UUID userId = UUID.randomUUID();
         UUID seatId = UUID.randomUUID();
 
-        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
-                new CreateReservationRequest(showId, userId, List.of(seatId)));
+        ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                new CreateReservationRequest(showId, List.of(seatId)));
         UUID reservationId = holdResult.response().reservationId();
 
         outboxPublisher.poll();
 
+        reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
+
         // Start saga
-        sagaOrchestrator.startSaga(reservationId);
+        sagaOrchestrator.startSaga(reservationId, userId);
 
         // Force expires_at to the past and run expiry sweep
         try (var conn = dataSource.getConnection();
@@ -114,7 +116,7 @@ class LateAuthAfterExpiryIT {
         holdExpiryScheduler.expireStaleHolds();
 
         // Confirm reservation is EXPIRED and saga is COMPENSATED from expiry
-        assertThat(reservationService.get(reservationId).status()).isEqualTo("EXPIRED");
+        assertThat(reservationService.get(reservationId, userId).status()).isEqualTo("EXPIRED");
         SagaInstance expiredSaga = sagaInstanceRepository.findByReservationId(reservationId).orElseThrow();
         assertThat(expiredSaga.getState()).isEqualTo(SagaState.COMPENSATED.name());
 
@@ -131,14 +133,16 @@ class LateAuthAfterExpiryIT {
         UUID showId2 = UUID.randomUUID();
         UUID seatId2 = UUID.randomUUID();
 
-        ReservationService.HoldResult holdResult2 = reservationService.hold(UUID.randomUUID(),
-                new CreateReservationRequest(showId2, userId, List.of(seatId2)));
+        ReservationService.HoldResult holdResult2 = reservationService.hold(UUID.randomUUID(), userId,
+                new CreateReservationRequest(showId2, List.of(seatId2)));
         UUID reservationId2 = holdResult2.response().reservationId();
 
         outboxPublisher.poll();
 
+        reservationService.setPaymentMethod(reservationId2, userId, "pm_card_visa");
+
         // Start saga — in PAYMENT_REQUESTED
-        sagaOrchestrator.startSaga(reservationId2);
+        sagaOrchestrator.startSaga(reservationId2, userId);
         assertThat(sagaInstanceRepository.findByReservationId(reservationId2).orElseThrow().getState())
                 .isEqualTo(SagaState.PAYMENT_REQUESTED.name());
 
@@ -180,7 +184,7 @@ class LateAuthAfterExpiryIT {
         sagaOrchestrator.handleRefundIssued(reservationId2, refundCorrelationId);
 
         // Reservation should now be REFUNDED
-        assertThat(reservationService.get(reservationId2).status()).isEqualTo("REFUNDED");
+        assertThat(reservationService.get(reservationId2, userId).status()).isEqualTo("REFUNDED");
 
         // Saga should be COMPENSATED with terminal step (AC5)
         SagaInstance finalSaga = sagaInstanceRepository.findByReservationId(reservationId2).orElseThrow();
@@ -233,7 +237,16 @@ class LateAuthAfterExpiryIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }

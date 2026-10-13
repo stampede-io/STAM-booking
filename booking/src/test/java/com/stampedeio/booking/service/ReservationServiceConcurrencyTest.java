@@ -77,9 +77,8 @@ class ReservationServiceConcurrencyTest {
             pool.submit(() -> {
                 try {
                     startGate.await();
-                    CreateReservationRequest req = new CreateReservationRequest(
-                            showId, UUID.randomUUID(), List.of(seatId));
-                    reservationService.hold(UUID.randomUUID(), req);
+                    CreateReservationRequest req = new CreateReservationRequest(showId, List.of(seatId));
+                    reservationService.hold(UUID.randomUUID(), UUID.randomUUID(), req);
                     successes.incrementAndGet();
                 } catch (ConflictException ex) {
                     conflicts.incrementAndGet();
@@ -108,7 +107,15 @@ class ReservationServiceConcurrencyTest {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
             };
         }
 

@@ -6,6 +6,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -85,13 +86,14 @@ class ContentionIT {
                     startGate.await();
 
                     String body = """
-                            {"showId":"%s","userId":"%s","seatIds":["%s"]}"""
-                            .formatted(showId, UUID.randomUUID(), seatId);
+                            {"showId":"%s","seatIds":["%s"]}"""
+                            .formatted(showId, seatId);
 
                     HttpRequest request = HttpRequest.newBuilder()
                             .uri(URI.create("http://localhost:" + port + "/api/v1/reservations"))
                             .header("Content-Type", "application/json")
                             .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .header("Authorization", "Bearer " + UUID.randomUUID())
                             .POST(HttpRequest.BodyPublishers.ofString(body))
                             .build();
 
@@ -146,7 +148,32 @@ class ContentionIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
+        }
+
+        /**
+         * STAM-447: this test hits a real embedded server with a real HTTP client,
+         * so it needs a real Authorization header. Rather than stand up identity's
+         * JWKS endpoint for a contention test, the decoder trusts the bearer value
+         * itself as the caller's user_id — each thread sends a fresh random UUID.
+         */
+        @Bean
+        @Primary
+        org.springframework.security.oauth2.jwt.JwtDecoder stubJwtDecoder() {
+            return token -> {
+                java.time.Instant now = java.time.Instant.now();
+                return new org.springframework.security.oauth2.jwt.Jwt(token, now, now.plusSeconds(3600),
+                        java.util.Map.of("alg", "none"),
+                        java.util.Map.of("user_id", token, "sub", token));
             };
         }
     }

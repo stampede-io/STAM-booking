@@ -72,14 +72,16 @@ class SagaRecoveryIT {
             UUID userId = UUID.randomUUID();
             UUID seatId = UUID.randomUUID();
 
-            ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
-                    new CreateReservationRequest(showId, userId, List.of(seatId)));
+            ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                    new CreateReservationRequest(showId, List.of(seatId)));
             UUID reservationId = holdResult.response().reservationId();
             assertThat(holdResult.response().status()).isEqualTo("HELD");
 
             outboxPublisher.poll();
 
-            orchestrator.startSaga(reservationId);
+            reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
+
+            orchestrator.startSaga(reservationId, userId);
             SagaInstance midFlight = sagaRepo.findByReservationId(reservationId).orElseThrow();
             assertThat(midFlight.getState()).isEqualTo(SagaState.PAYMENT_REQUESTED.name());
 
@@ -156,11 +158,13 @@ class SagaRecoveryIT {
             UUID userId = UUID.randomUUID();
             UUID seatId = UUID.randomUUID();
 
-            ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(),
-                    new CreateReservationRequest(showId, userId, List.of(seatId)));
+            ReservationService.HoldResult holdResult = reservationService.hold(UUID.randomUUID(), userId,
+                    new CreateReservationRequest(showId, List.of(seatId)));
             UUID reservationId = holdResult.response().reservationId();
 
-            orchestrator.startSaga(reservationId);
+            reservationService.setPaymentMethod(reservationId, userId, "pm_card_visa");
+
+            orchestrator.startSaga(reservationId, userId);
 
             // Force saga into COMPENSATING state and backdate
             try (var conn = ds.getConnection();
@@ -177,7 +181,7 @@ class SagaRecoveryIT {
             assertThat(compensated.getState()).isEqualTo(SagaState.COMPENSATED.name());
             assertThat(compensated.getStep()).isEqualTo("RECOVERY_SWEEP_COMPENSATED");
 
-            assertThat(reservationService.get(reservationId).status()).isEqualTo("RELEASED");
+            assertThat(reservationService.get(reservationId, userId).status()).isEqualTo("RELEASED");
 
             outboxPublisher.poll();
 
@@ -257,7 +261,16 @@ class SagaRecoveryIT {
         @Bean
         @Primary
         CatalogClient stubCatalogClient() {
-            return (showId, seatIds) -> {};
+            return new CatalogClient() {
+                @Override
+                public void validateSeatsForShow(UUID showId, List<UUID> seatIds) {
+                }
+
+                @Override
+                public long totalPriceCentsForSeats(UUID showId, List<UUID> seatIds) {
+                    return 5000L;
+                }
+            };
         }
     }
 }

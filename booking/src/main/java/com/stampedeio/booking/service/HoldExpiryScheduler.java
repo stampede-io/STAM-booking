@@ -7,20 +7,13 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.stampedeio.booking.domain.Reservation;
-import com.stampedeio.booking.domain.ReservationStateMachine;
-import com.stampedeio.booking.domain.ReservationStatus;
-import com.stampedeio.booking.domain.SagaInstance;
-import com.stampedeio.booking.domain.SagaState;
-import com.stampedeio.booking.domain.SeatHoldStatus;
 import com.stampedeio.booking.repository.ReservationRepository;
-import com.stampedeio.booking.repository.SagaInstanceRepository;
+import com.stampedeio.booking.saga.BookingSagaOrchestrator;
 
 @Component
 public class HoldExpiryScheduler {
@@ -28,60 +21,48 @@ public class HoldExpiryScheduler {
     private static final Logger log = LoggerFactory.getLogger(HoldExpiryScheduler.class);
 
     private final ReservationRepository reservationRepository;
-    private final SagaInstanceRepository sagaInstanceRepository;
-    private final ReservationService reservationService;
-    private final HoldMirrorService holdMirrorService;
+    private final BookingSagaOrchestrator sagaOrchestrator;
     private final Clock clock;
 
     public HoldExpiryScheduler(ReservationRepository reservationRepository,
-                               SagaInstanceRepository sagaInstanceRepository,
-                               ReservationService reservationService,
-                               HoldMirrorService holdMirrorService,
+                               BookingSagaOrchestrator sagaOrchestrator,
                                Clock clock) {
         this.reservationRepository = reservationRepository;
-        this.sagaInstanceRepository = sagaInstanceRepository;
-        this.reservationService = reservationService;
-        this.holdMirrorService = holdMirrorService;
+        this.sagaOrchestrator = sagaOrchestrator;
         this.clock = clock;
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void onStartup() {
-        expireStaleHolds();
-    }
-
+    // STAM-446: this is the only sweep trigger. @Scheduled(fixedRate = ...)
+    // with no initialDelay already fires as soon as the scheduler starts, so
+    // a separate ApplicationReadyEvent listener calling the same method raced
+    // it on every boot — both read the same expired holds, both computed the
+    // same next event seq, and the loser's insert crashed the app on an
+    // ApplicationReadyEvent listener, which aborts Spring Boot startup.
     @Scheduled(fixedRate = 30_000)
     public void scheduledExpiry() {
         expireStaleHolds();
     }
 
-    @Transactional
     public void expireStaleHolds() {
         List<Reservation> expired = reservationRepository.findExpiredHolds(Instant.now(clock));
         if (expired.isEmpty()) {
             return;
         }
+
+        int processed = 0;
         for (Reservation reservation : expired) {
-            ReservationStateMachine.transition(reservation.getStatus(), ReservationStatus.EXPIRED);
-            reservation.setStatus(ReservationStatus.EXPIRED);
-            reservation.getSeats().forEach(seat -> seat.setStatus(SeatHoldStatus.RELEASED));
-            holdMirrorService.remove(reservation.getId());
-
-            String correlationId = UUID.randomUUID().toString();
-            reservationService.appendEvent(reservation, "RESERVATION_EXPIRED", correlationId, null);
-            reservationService.appendOutbox(reservation, "HoldExpired", correlationId);
-
-            sagaInstanceRepository.findByReservationId(reservation.getId()).ifPresent(saga -> {
-                if (!SagaState.COMPENSATED.name().equals(saga.getState())
-                        && !SagaState.COMPLETED.name().equals(saga.getState())) {
-                    saga.advance(SagaState.COMPENSATING, "HOLD_EXPIRED");
-                    saga.advance(SagaState.COMPENSATED, "HOLD_EXPIRED_SEATS_FREED");
-                    sagaInstanceRepository.save(saga);
-                    log.info("Saga compensated via hold expiry for reservation={}", reservation.getId());
-                }
-            });
+            UUID reservationId = reservation.getId();
+            try {
+                sagaOrchestrator.expireHeldReservation(reservationId);
+                processed++;
+            } catch (DataIntegrityViolationException e) {
+                // A concurrent sweep (this instance's previous run still
+                // finishing, or — once there's more than one replica —
+                // another instance) committed this reservation's expiry
+                // first. Not an error: the reservation is expired either way.
+                log.info("Reservation={} already expired by a concurrent sweep, skipping", reservationId);
+            }
         }
-        reservationRepository.saveAll(expired);
-        log.info("Expired {} stale hold(s)", expired.size());
+        log.info("Processed {} of {} stale hold(s) for expiry", processed, expired.size());
     }
 }

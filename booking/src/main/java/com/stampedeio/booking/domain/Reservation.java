@@ -41,6 +41,9 @@ public class Reservation {
     @Column(name = "idempotency_key", nullable = false, unique = true)
     private UUID idempotencyKey;
 
+    @Column(name = "payment_method_id")
+    private String paymentMethodId;
+
     @Version
     @Column(nullable = false)
     private Integer version;
@@ -94,6 +97,15 @@ public class Reservation {
 
     public UUID getIdempotencyKey() {
         return idempotencyKey;
+    }
+
+    public String getPaymentMethodId() {
+        return paymentMethodId;
+    }
+
+    public void setPaymentMethodId(String paymentMethodId) {
+        this.paymentMethodId = paymentMethodId;
+        this.updatedAt = Instant.now();
     }
 
     public Integer getVersion() {
