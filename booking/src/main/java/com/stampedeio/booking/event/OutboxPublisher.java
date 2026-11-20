@@ -56,14 +56,22 @@ public class OutboxPublisher {
 
         List<CompletableFuture<?>> sends = new ArrayList<>(pending.size());
         for (OutboxMessage msg : pending) {
-            sends.add(send(msg));
+            CompletableFuture<?> sent = send(msg);
+            sends.add(sent);
+            // A synchronous failure means no broker metadata: every further
+            // send() would block max.block.ms too, stalling the shared
+            // scheduler thread for pending.size() x 5 s. Nothing after it
+            // could be marked anyway.
+            if (sent.isCompletedExceptionally()) {
+                break;
+            }
         }
 
         // Mark only the acked prefix, in outbox order. Stopping at the first
         // failure keeps a reservation's events in order: SeatsReleased must
         // not be marked while the SeatsHeld before it is still to be retried.
         List<OutboxMessage> acked = new ArrayList<>();
-        for (int i = 0; i < pending.size(); i++) {
+        for (int i = 0; i < sends.size(); i++) {
             OutboxMessage msg = pending.get(i);
             try {
                 sends.get(i).get(ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);

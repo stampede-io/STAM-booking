@@ -130,12 +130,17 @@ class OutboxPublisherTest {
     void poll_leaves_row_unpublished_when_send_throws() {
         OutboxMessage msg = new OutboxMessage("Reservation", UUID.randomUUID(), "SeatsHeld",
                 "{}", UUID.randomUUID(), "reservations.events");
-        when(outboxRepository.findUnpublished()).thenReturn(List.of(msg));
+        OutboxMessage next = new OutboxMessage("Reservation", UUID.randomUUID(), "SeatsHeld",
+                "{}", UUID.randomUUID(), "reservations.events");
+        when(outboxRepository.findUnpublished()).thenReturn(List.of(msg, next));
         when(kafkaTemplate.send(any(ProducerRecord.class))).thenThrow(new RuntimeException("metadata timeout"));
 
         publisher.poll();
 
         assertThat(msg.getPublishedAt()).isNull();
+        assertThat(next.getPublishedAt()).isNull();
+        // No second send: each would block another max.block.ms on the scheduler thread.
+        verify(kafkaTemplate, org.mockito.Mockito.times(1)).send(any(ProducerRecord.class));
         verify(outboxRepository, never()).saveAll(any());
     }
 }
