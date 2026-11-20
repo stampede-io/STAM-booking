@@ -29,6 +29,14 @@ public class KafkaProducerConfig {
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
+        // STAM-451: OutboxPublisher waits for each ack before marking a row,
+        // on the shared scheduler thread. Kafka's defaults (2 min delivery,
+        // 1 min metadata block) would stall hold expiry and the saga sweep
+        // for minutes per poll during a broker outage. Fail fast instead;
+        // the row stays unpublished and the next poll retries it.
+        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 5_000);
+        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 15_000);
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 5_000);
         // STAM-65 / AC2: a manually-built factory doesn't get Spring
         // Boot's auto-configured Micrometer listener — without this,
         // zero kafka_producer_* metrics exist at all.
