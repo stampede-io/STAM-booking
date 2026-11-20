@@ -26,6 +26,7 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.MicrometerConsumerListener;
+import org.springframework.kafka.core.MicrometerProducerListener;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ContainerProperties;
@@ -81,18 +82,28 @@ public class KafkaConsumerConfig {
         return factory;
     }
 
-    @Bean("dlqKafkaTemplate")
-    public KafkaTemplate<String, Object> dlqKafkaTemplate(ProducerFactory<String, Object> producerFactory) {
+    @Bean
+    public ProducerFactory<String, Object> dlqProducerFactory(
+            ProducerFactory<String, Object> producerFactory, MeterRegistry meterRegistry) {
         // Same producer settings as the outbox, but a record that failed
         // deserialization reaches the recoverer as its original byte[]:
         // publish those bytes as-is rather than as a base64 JSON string, so
-        // the DLQ holds exactly what arrived (STAM-452).
+        // the DLQ holds exactly what arrived (STAM-452). A bean, so Spring
+        // closes it on shutdown, with the same Micrometer listener (STAM-65).
         Map<Class<?>, Serializer<?>> byType = new LinkedHashMap<>();
         byType.put(byte[].class, new ByteArraySerializer());
         byType.put(Object.class, new JsonSerializer<>());
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(
+        DefaultKafkaProducerFactory<String, Object> factory = new DefaultKafkaProducerFactory<>(
                 producerFactory.getConfigurationProperties(),
-                new StringSerializer(), new DelegatingByTypeSerializer(byType, true)));
+                new StringSerializer(), new DelegatingByTypeSerializer(byType, true));
+        factory.addListener(new MicrometerProducerListener<>(meterRegistry));
+        return factory;
+    }
+
+    @Bean("dlqKafkaTemplate")
+    public KafkaTemplate<String, Object> dlqKafkaTemplate(
+            @Qualifier("dlqProducerFactory") ProducerFactory<String, Object> dlqProducerFactory) {
+        return new KafkaTemplate<>(dlqProducerFactory);
     }
 
     @Bean
