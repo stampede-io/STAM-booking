@@ -101,4 +101,46 @@ class OutboxPublisherTest {
         assertThat(record.headers().lastHeader("correlationId").value())
                 .isEqualTo(correlationId.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
+    @Test
+    @DisplayName("STAM-451: a send Kafka never acks is not marked, and neither is any row after it")
+    void poll_marks_only_the_acked_prefix() {
+        UUID aggregateId = UUID.randomUUID();
+        OutboxMessage acked = new OutboxMessage("Reservation", aggregateId, "SeatsHeld",
+                "{}", UUID.randomUUID(), "reservations.events");
+        OutboxMessage failed = new OutboxMessage("Reservation", aggregateId, "SeatsReleased",
+                "{}", UUID.randomUUID(), "reservations.events");
+        OutboxMessage afterFailure = new OutboxMessage("Reservation", aggregateId, "HoldExpired",
+                "{}", UUID.randomUUID(), "reservations.events");
+        when(outboxRepository.findUnpublished()).thenReturn(List.of(acked, failed, afterFailure));
+        when(kafkaTemplate.send(any(ProducerRecord.class)))
+                .thenReturn(CompletableFuture.completedFuture(null))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("broker down")))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        publisher.poll();
+
+        assertThat(acked.getPublishedAt()).isNotNull();
+        assertThat(failed.getPublishedAt()).isNull();
+        assertThat(afterFailure.getPublishedAt()).isNull();
+        verify(outboxRepository).saveAll(List.of(acked));
+    }
+
+    @Test
+    @DisplayName("STAM-451: send() throwing (no metadata within max.block.ms) leaves the row unpublished")
+    void poll_leaves_row_unpublished_when_send_throws() {
+        OutboxMessage msg = new OutboxMessage("Reservation", UUID.randomUUID(), "SeatsHeld",
+                "{}", UUID.randomUUID(), "reservations.events");
+        OutboxMessage next = new OutboxMessage("Reservation", UUID.randomUUID(), "SeatsHeld",
+                "{}", UUID.randomUUID(), "reservations.events");
+        when(outboxRepository.findUnpublished()).thenReturn(List.of(msg, next));
+        when(kafkaTemplate.send(any(ProducerRecord.class))).thenThrow(new RuntimeException("metadata timeout"));
+
+        publisher.poll();
+
+        assertThat(msg.getPublishedAt()).isNull();
+        assertThat(next.getPublishedAt()).isNull();
+        // No second send: each would block another max.block.ms on the scheduler thread.
+        verify(kafkaTemplate, org.mockito.Mockito.times(1)).send(any(ProducerRecord.class));
+        verify(outboxRepository, never()).saveAll(any());
+    }
 }

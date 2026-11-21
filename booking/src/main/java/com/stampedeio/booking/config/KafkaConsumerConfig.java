@@ -4,12 +4,16 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -19,14 +23,20 @@ import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.MicrometerConsumerListener;
+import org.springframework.kafka.core.MicrometerProducerListener;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.ListenerExecutionFailedException;
+import org.springframework.kafka.support.serializer.DelegatingByTypeSerializer;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.kafka.support.serializer.JsonSerializer;
 import org.springframework.util.backoff.ExponentialBackOff;
 
 import io.micrometer.core.instrument.MeterRegistry;
@@ -54,7 +64,12 @@ public class KafkaConsumerConfig {
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "booking-saga-consumer");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        // STAM-452: a record whose bytes aren't JSON fails inside poll(),
+        // before any listener or error handler sees it, and the container
+        // re-polls that offset forever. The wrapper turns the failure into a
+        // DeserializationException the DefaultErrorHandler can dead-letter.
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, JsonDeserializer.class);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(JsonDeserializer.TRUSTED_PACKAGES, "*");
@@ -67,9 +82,28 @@ public class KafkaConsumerConfig {
         return factory;
     }
 
+    @Bean
+    public ProducerFactory<String, Object> dlqProducerFactory(
+            ProducerFactory<String, Object> producerFactory, MeterRegistry meterRegistry) {
+        // Same producer settings as the outbox, but a record that failed
+        // deserialization reaches the recoverer as its original byte[]:
+        // publish those bytes as-is rather than as a base64 JSON string, so
+        // the DLQ holds exactly what arrived (STAM-452). A bean, so Spring
+        // closes it on shutdown, with the same Micrometer listener (STAM-65).
+        Map<Class<?>, Serializer<?>> byType = new LinkedHashMap<>();
+        byType.put(byte[].class, new ByteArraySerializer());
+        byType.put(Object.class, new JsonSerializer<>());
+        DefaultKafkaProducerFactory<String, Object> factory = new DefaultKafkaProducerFactory<>(
+                producerFactory.getConfigurationProperties(),
+                new StringSerializer(), new DelegatingByTypeSerializer(byType, true));
+        factory.addListener(new MicrometerProducerListener<>(meterRegistry));
+        return factory;
+    }
+
     @Bean("dlqKafkaTemplate")
-    public KafkaTemplate<String, Object> dlqKafkaTemplate(ProducerFactory<String, Object> producerFactory) {
-        return new KafkaTemplate<>(producerFactory);
+    public KafkaTemplate<String, Object> dlqKafkaTemplate(
+            @Qualifier("dlqProducerFactory") ProducerFactory<String, Object> dlqProducerFactory) {
+        return new KafkaTemplate<>(dlqProducerFactory);
     }
 
     @Bean
@@ -78,7 +112,12 @@ public class KafkaConsumerConfig {
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 dlqKafkaTemplate,
                 (record, ex) -> new TopicPartition(record.topic() + ".dlq", record.partition()));
-        recoverer.setHeadersFunction((consumerRecord, ex) -> {
+        recoverer.setHeadersFunction((consumerRecord, thrown) -> {
+            // Spring wraps every failure in ListenerExecutionFailedException;
+            // record the cause underneath, or the DLQ can't tell a
+            // DeserializationException from a saga bug.
+            Exception ex = thrown instanceof ListenerExecutionFailedException
+                    && thrown.getCause() instanceof Exception cause ? cause : thrown;
             RecordHeaders headers = new RecordHeaders();
             headers.add("original-topic",
                     consumerRecord.topic().getBytes(StandardCharsets.UTF_8));
